@@ -1,12 +1,27 @@
-html, body, #app {
+html, body {
   margin: 0;
   height: 100%;
   background: #111;
   color: #eee;
   font-family: system-ui, sans-serif;
+  overflow: hidden;
+}
+
+canvas {
+  display: block;
 }
 
 #status {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 5;
   margin: 0;
-  padding: 1.25rem;
+  padding: 0.75rem 1rem;
+  background: rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+}
+
+#ARButton {
+  z-index: 20;
 }
