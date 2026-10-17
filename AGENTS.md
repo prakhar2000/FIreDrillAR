@@ -31,7 +31,7 @@ When you give a shell command, give both forms if they differ (bash/zsh on Mac, 
 ### Will break the demo if missed
 1. **Devaj's server is unreachable.** Prakhar's Vite proxies `/py` to Devaj's laptop on port 8000. Windows marks a phone hotspot as *Public*, and its firewall then blocks inbound traffic. Fix: Settings → Network → hotspot → **Private**, and allow Python on Private networks. Test: `https://<prakhar-ip>:5173/py/health`.
 2. **The AR clip is stuck on the Quest.** macOS can't browse the headset as a drive. Prakhar needs **Meta Quest Developer Hub** or `adb` (`brew install android-platform-tools`) installed *before* the Quest slot. Alternative: share it from the headset itself.
-3. **DataFeel SDK.** It's Unity/.NET, so it most likely works best on Windows. Keep the driver and the server on Devaj's laptop. Read the El Jefe's serial port from config (`COM3` on Windows, `/dev/tty.usbmodem…` on Mac); never hard-code it. A Windows laptop may need a USB-serial driver. Only one process can hold the port, so close the SDK's demo app before running ours.
+3. **DataFeel.** We use DataFeel's Python SDK (`server/dots.py`, details in README section 4). It finds the El Jefe's serial port by USB ID, so never hard-code `COM3` or `/dev/tty.…`. Keep the driver and the server on Devaj's Windows laptop. If no COM port appears, install the Silicon Labs **CP210x VCP** driver. Only one process can hold the port, so close Composer or any sample app before starting the server; `uvicorn --reload` restarts release it automatically.
 4. **Line endings.** `.gitattributes` forces LF. Don't remove it, and don't commit with a tool that rewrites it to CRLF.
 
 ### Git / files

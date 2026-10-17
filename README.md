@@ -81,10 +81,21 @@ An instructor builds a fire drill inside a real room in AR, using their voice an
   - **heat and cold** (4–50°C)
   - **8 full-colour LEDs**
   - motion sensing (IMU; we won't use it)
-- **SDK:** Unity, .NET "and more." Watch and velcro mounts are included.
+- Watch and velcro mounts are included. The El Jefe needs **its own power brick** (USB alone isn't enough).
+- **SDK (found):** official **Python** SDK `datafeel` in [DataFeel/devkit-samples](https://github.com/DataFeel/devkit-samples) `Python/` (also .NET there; no Unity needed). Not on PyPI; installed from GitHub via `server/requirements.txt`.
+  - USB serial via a Silicon Labs **CP210x** chip, Modbus RTU at 115200. `discover_devices(4)` finds the port by USB ID (no hard-coded `COM3`) and returns Dots at addresses 1–4. No COM port in Device Manager → install Silicon Labs' "CP210x VCP" driver.
+  - Calls we use: `registers.set_thermal_mode(ThermalMode.TEMPERATURE_TARGET)` + `registers.set_skin_temp_target(°C)`, `play_frequency(Hz, 0–1)` / `stop_vibration()`, `set_led(r, g, b)`, `disable_all_thermal()`, `registers.get_skin_temperature()` / `get_sink_temperature()`.
+  - **SDK bug:** `activate_thermal_temperature_control()` calls a method that doesn't exist; use the two `registers.` calls above.
+- **Lessons from another team's project** ([KaushikSiva/resonance](https://github.com/KaushikSiva/resonance), `thermoscene.py`):
+  - Raw power mode (`activate_thermal_intensity_control`) overshot to 43°C. Use **temperature-target mode**; they ran 39°C hot / 32°C neutral / 19°C cold.
+  - The heat sink saturates in **~15 s** of strong heat, so turn thermal off when the trainee isn't near a fire.
+  - Hard cut-outs: skin > 40.5°C or sink > 48°C → drive to 28°C; resume below 37°C / 42°C.
+  - Modbus is slow: drive the Dots from a background thread and only write when a value changes.
+- **All of the above is implemented in `server/dots.py`** (39°C max, 20°C cool pulse, those cut-outs).
 - **Ask Jiyi (DataFeel, on site):**
-  1. What is a safe heat cap on skin? 50°C is too hot to hold against skin; plan for about 40°C until she gives a number.
-  2. Which SDK is easiest to drive from a laptop (Python?), and can it take commands over the network?
+  1. What is a safe heat cap on skin? We use 39°C (`MAX_HEAT_C` in `server/dots.py`) until she gives a number.
+  2. Does the `devkit-samples` Python register map match our Gen 10 firmware?
+  3. Can we keep the kit through judging?
 
 ---
 
@@ -107,7 +118,7 @@ Only Prakhar needs the Quest and only Devaj needs DataFeel. Everyone else builds
 The ones that can actually break the demo:
 1. **Devaj's server unreachable.** Prakhar's Vite proxies `/py` to Devaj's laptop on port 8000. Windows marks a phone hotspot as *Public* and the firewall blocks it. Devaj: Settings → Network → hotspot → **Private**, and allow Python on Private networks. Test with `https://<prakhar-ip>:5173/py/health`.
 2. **Getting the AR clip off the Quest (Prakhar, Mac).** macOS can't browse the headset like a drive. Install **Meta Quest Developer Hub** (or `adb`) *before* the Quest slot.
-3. **DataFeel SDK.** It's Unity/.NET, so it most likely works best on Windows. Keep the server and driver on Devaj's Windows laptop. Read the El Jefe's port from config (`COM3` on Windows vs `/dev/tty.usbmodem…` on Mac), never hard-code it.
+3. **DataFeel.** The Python SDK finds the El Jefe's port automatically (`COM…` on Windows, `/dev/tty.…` on Mac), but the kit plugs into one laptop, so keep the server and driver on Devaj's Windows laptop. If no COM port appears, install the Silicon Labs CP210x driver.
 4. **Line endings.** `.gitattributes` forces LF for everyone, so Windows commits don't show whole-file diffs or conflicts. Don't remove it.
 
 **Full list (git, npm, Python, network, Quest, browser code, demo-day laptop prep): see "Mac vs Windows: full reference" in [AGENTS.md](AGENTS.md).**
@@ -258,65 +269,19 @@ Open the `https://localhost:5173` link Vite prints, and click past the certifica
 ```bash
 cd firedrill/server
 python3 -m venv .venv && source .venv/bin/activate     # Windows: py -m venv .venv ; .venv\Scripts\activate
-pip install fastapi "uvicorn[standard]" httpx python-dotenv
+pip install -r requirements.txt
 ```
 
-Write `server/requirements.txt` by hand with those four lines (`fastapi`, `uvicorn[standard]`, `httpx`, `python-dotenv`). Don't use `pip freeze`; see "Mac vs Windows" in section 5.
+`server/requirements.txt` is hand-written (includes the DataFeel SDK from GitHub, so `git` must be installed). Don't regenerate it with `pip freeze`; see "Mac vs Windows" in section 5.
 
 `server/.env` (never commit this):
 ```
 ASSEMBLYAI_API_KEY=your_key_here
 ```
 
-`server/app.py` starting point:
-```python
-import json, os
-import httpx
-from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-
-load_dotenv()
-KEY = os.getenv("ASSEMBLYAI_API_KEY", "")
-app = FastAPI()
-
-MAX_HEAT_C = 40      # replace with Jiyi's safe number
-NEUTRAL_C = 33       # roughly skin temperature
-COOL_C = 20
-
-def drive_dots(left, right, buzz, cool):
-    """Translate the app's message into Dot commands. Replace the print with DataFeel SDK calls."""
-    t_left = NEUTRAL_C + left * (MAX_HEAT_C - NEUTRAL_C)
-    t_right = NEUTRAL_C + right * (MAX_HEAT_C - NEUTRAL_C)
-    if cool:
-        t_left = t_right = COOL_C
-    print(f"L {t_left:.1f}C  R {t_right:.1f}C  buzz={buzz}  cool={cool}")
-    # TODO (Devaj): set Dot temperatures, vibrate when buzz, LEDs red scaled by max(left, right)
-
-@app.get("/health")
-def health():
-    return {"ok": True, "assemblyai_key": bool(KEY)}
-
-@app.get("/token")
-async def token():
-    if not KEY:
-        raise HTTPException(500, "Set ASSEMBLYAI_API_KEY in server/.env")
-    async with httpx.AsyncClient(timeout=10) as c:
-        r = await c.get("https://streaming.assemblyai.com/v3/token",
-                        params={"expires_in_seconds": 60}, headers={"Authorization": KEY})
-    if r.status_code != 200:
-        raise HTTPException(r.status_code, r.text)
-    return r.json()          # {"token": "..."}
-
-@app.websocket("/ws/heat")
-async def heat(ws: WebSocket):
-    await ws.accept()
-    try:
-        while True:
-            m = json.loads(await ws.receive_text())
-            drive_dots(m.get("left", 0), m.get("right", 0), m.get("buzz", False), m.get("cool", False))
-    except WebSocketDisconnect:
-        drive_dots(0, 0, False, False)
-```
+Server code (in the repo):
+- `server/app.py`: `/health` (key loaded? Dots status), `/token` (temporary AssemblyAI token for Emma's `voice.js`), `/ws/heat` (haptics messages → `dots.update()`; on disconnect everything turns off).
+- `server/dots.py`: DataFeel driver (section 4). `python dots.py` = logic check + hardware hello-world.
 
 Run it with `uvicorn app:app --host 0.0.0.0 --port 8000 --reload`. Then check `https://<prakhar-ip>:5173/py/health` in a browser; you should see `{"ok": true, ...}`.
 
@@ -426,12 +391,11 @@ Everyone codes against these, so pieces plug together at merge time.
    - side = dot product of the direction to the fire with the head's right vector
    - `left = proximity × (0.5 − 0.5 × side)`, `right = proximity × (0.5 + 0.5 × side)`
    - Check: `node web/src/heat.check.js` (no output = pass). Distances are horizontal only, so crouching doesn't change which wrist is warm.
-3. **Before the kit arrives:** talk to Jiyi about the safe heat cap and the easiest SDK. Install the SDK and run its hello-world.
-4. **DataFeel slot:** fill in `drive_dots()`:
-   - left/right Dots warm by proximity, capped
-   - vibrate on `buzz`
-   - all Dots cool on `cool`
-   - LEDs glow red by heat
+3. 🚧 **Before the kit arrives:** SDK found and installed (section 4). Still to do: confirm the heat cap with Jiyi, then run `python dots.py` with the kit plugged in (logic check, then each Dot buzzes red and says which wrist it goes on).
+4. ✅ (code) / 🚧 (untested on hardware) **DataFeel driver, `server/dots.py`:**
+   - left/right Dots warm by proximity (first half of the Dots = left wrist; `SWAP_SIDES` if strapped the other way), 33°C → 39°C, off when not near a fire
+   - vibrate at 170 Hz on `buzz`; all Dots go to 20°C and blue on `cool`; LEDs red by heat
+   - safety cut-outs and auto-reconnect; `/health` shows the Dots' status; with no kit it prints `[no Dots] L … R …` instead
    - Heat changes over seconds, so start warming from a few metres away.
 
 *Done when:* walking toward the fire in desktop mode warms the correct wrist, standing up in smoke buzzes, and reaching the exit gives a cool pulse.

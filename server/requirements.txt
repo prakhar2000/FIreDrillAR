@@ -2,3 +2,4 @@ fastapi
 uvicorn[standard]
 httpx
 python-dotenv
+datafeel @ git+https://github.com/DataFeel/devkit-samples.git#subdirectory=Python
