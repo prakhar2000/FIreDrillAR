@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { connectPoseChannel } from './eileen-pose-channel.js';
 import { loadHeadsetRoom, roomToXRMatrix } from './eileen-xr-room.js';
 import { createHeadsetAnnotations } from './eileen-xr-annotations.js';
+import { createRoomEffects } from './eileen-effects.js';
 
 const startButton = document.querySelector('#start');
 const stopButton = document.querySelector('#stop');
@@ -15,10 +16,14 @@ let sessionId, seq = 0, lastSend = -Infinity, hasPose = false, sent = 0, label;
 let roomRoot, roomPreview, roomReady = false;
 let pendingAlignment = null;
 let updateAnnotations;
+let effects, previousFrameTime = null, latestHeadY = 1.6, modelAlignment = null;
+const soundButton = document.querySelector('#effects-sound');
+const effectsStatus = document.querySelector('#effects-status');
 const roomStatus = document.querySelector('#model-status');
 
 function resetTracking() {
   pendingAlignment = null;
+  modelAlignment = null;
   sessionId = crypto.randomUUID(); seq = 0; lastSend = -Infinity; hasPose = false;
   channel?.tracking('reset');
   if (roomRoot && roomPreview) {
@@ -32,6 +37,7 @@ function applyRoomAlignment(data) {
   pendingAlignment = data;
   if (!roomReady) return;
   roomRoot.matrix.copy(roomToXRMatrix(data));
+  modelAlignment = data;
   roomStatus.textContent = 'Room aligned with computer. Head movement is live.';
 }
 
@@ -46,6 +52,7 @@ function makeView() {
   scene = new THREE.Scene(); scene.background = new THREE.Color(0x72879a);
   roomRoot = new THREE.Group(); scene.add(roomRoot);
   updateAnnotations = createHeadsetAnnotations(roomRoot);
+  effects = createRoomEffects(roomRoot);
   roomStatus.textContent = 'Loading scanned room and textures...';
   loadHeadsetRoom(roomRoot).then(({ preview, missingTexture }) => {
     roomPreview = preview; roomReady = true;
@@ -55,6 +62,7 @@ function makeView() {
   }).catch((error) => { roomStatus.textContent = `Room loading failed: ${error.message}. Reload to retry.`; });
   scene.add(new THREE.GridHelper(8, 16, 0x75aebd, 0x345261));
   camera = new THREE.PerspectiveCamera(60, 2, 0.05, 100);
+  scene.add(camera);
   camera.position.set(0, 1.6, 2.5);
   const canvas = document.createElement('canvas'); canvas.width = 1024; canvas.height = 256;
   const texture = new THREE.CanvasTexture(canvas);
@@ -62,9 +70,12 @@ function makeView() {
   const sign = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 0.6), new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide }));
   sign.position.set(0, 1.6, -2); scene.add(sign);
   renderer.setAnimationLoop((time, frame) => {
+    const dt = previousFrameTime === null ? 0 : Math.min(0.05, Math.max(0, (time - previousFrameTime) / 1000));
+    previousFrameTime = time;
     if (frame && session && reference) {
       const pose = session.visibilityState === 'visible' ? frame.getViewerPose(reference) : null;
       if (pose && !pose.emulatedPosition) {
+        latestHeadY = modelAlignment ? pose.transform.position.y * modelAlignment.scale + modelAlignment.target[1] : 1.6;
         if (!hasPose) { resetTracking(); hasPose = true; }
         if (time - lastSend >= 50) {
           const p = pose.transform.position, q = pose.transform.orientation;
@@ -82,7 +93,7 @@ function makeView() {
             : 'Position is emulated. Waiting for physical head tracking.';
       }
     }
-    const text = `${session ? connection.textContent : 'Ready for VR'} | ${roomStatus.textContent} | ${tracking.textContent}`;
+    const text = `${session ? connection.textContent : 'Ready for VR'} | ${roomStatus.textContent} | ${tracking.textContent} | ${effectsStatus.textContent}`;
     if (label.text !== text) {
       label.text = text;
       const ctx = label.canvas.getContext('2d');
@@ -91,14 +102,21 @@ function makeView() {
       ctx.fillText(roomStatus.textContent, 512, 100, 980);
       ctx.fillStyle = '#ffffff'; ctx.font = '30px Arial';
       ctx.fillText(tracking.textContent, 512, 165, 980);
+      ctx.font = '26px Arial';
+      ctx.fillText(effectsStatus.textContent, 512, 220, 980);
       label.texture.needsUpdate = true;
     }
+    effects.update(dt, latestHeadY);
+    effects.beforeView(camera, Boolean(session && modelAlignment));
     renderer.render(scene, camera);
   });
 }
 
 function endSession() {
   pendingAlignment = null;
+  modelAlignment = null;
+  effects?.enableSound(camera, false);
+  soundButton.textContent = 'Enable sound'; soundButton.setAttribute('aria-pressed', 'false');
   reference?.removeEventListener('reset', resetTracking);
   reference = null; session = null; hasPose = false;
   channel?.tracking('ended'); channel?.close(); channel = null;
@@ -118,6 +136,12 @@ startButton.addEventListener('click', async () => {
     session.addEventListener('end', endSession, { once: true });
     makeView();
     channel = connectPoseChannel({ role: 'publisher', room: roomInput.value,
+      onEffects(data) {
+        effects.apply(data.roomId === '10_17_2026' ? data : { ...data, running: false, fires: [] });
+        effectsStatus.textContent = data.roomId === '10_17_2026'
+          ? `${data.fires.length} fires | Smoke ${data.running ? 'running' : 'stopped'}`
+          : 'Computer is showing the sample room. Select Scanned room to sync effects.';
+      },
       onAnnotations: (snapshot) => updateAnnotations(snapshot),
       onAlignment: applyRoomAlignment,
       onStatus: (message) => { connection.textContent = message; } });
@@ -136,6 +160,12 @@ startButton.addEventListener('click', async () => {
   }
 });
 stopButton.addEventListener('click', () => session?.end());
+soundButton.addEventListener('click', () => {
+  const enabled = soundButton.getAttribute('aria-pressed') !== 'true';
+  effects.enableSound(camera, enabled);
+  soundButton.setAttribute('aria-pressed', String(enabled));
+  soundButton.textContent = enabled ? 'Mute sound' : 'Enable sound';
+});
 
 async function checkSupport() {
   if (!window.isSecureContext) { support.textContent = 'Open this page over trusted HTTPS.'; return; }

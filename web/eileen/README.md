@@ -11,6 +11,7 @@ Progress:
 - Done: desktop sample/scan view, keyboard simulation and headset-following camera.
 - Done: paired pose transport, calibration, live scan annotations and draft routes.
 - Done: automated relay/transform tests and both-entry production build.
+- Done: team fire/smoke rendering, opt-in audio and paired effect snapshots.
 - Pending: physical room validation; native Vision Pro scanning is not implemented.
 
 ## Start
@@ -82,6 +83,29 @@ annotations are not displayed over the scan. Use one editing observer per pairin
 code; multiple observers can overwrite each other's snapshots. Markers are in-memory:
 export before refreshing the computer page, since a refresh discards local annotations.
 
+## Fire and smoke demo
+
+1. In the left overview, choose **Place fire**, then click a room surface. Press Esc
+   when finished. Up to 20 fixed fire patches are supported per room.
+2. Choose **Start smoke**. **Stop smoke** clears smoke and stops audio while retaining
+   visible fire patches; **Clear fires** removes the patches too.
+3. Click **Enable sound** on each device where audio is wanted. On the headset,
+   enable sound before entering VR; audio stays local to that device.
+4. Connect both pages with the same pairing code and align the scan as usual.
+   Fire positions and the smoke timeline sync on edits and every observer heartbeat.
+   A headset joining later receives the current snapshot. Sample-room effects are
+   desktop-only and clear the headset's scan effects.
+5. Auto route excludes a radius of 1.5 model units around fire sources (scaled by the
+   alignment's model units/metre when available). Placing or clearing fire invalidates
+   generated routes. Replan explicitly; this does not model heat, smoke or safe egress.
+
+The integration reuses the team's renderer through a versioned snapshot documented
+in `vendor/README.md`. Fire spread/burn-out is disabled so clients share fixed hazard
+positions. Smoke height follows the observer's elapsed time; particles and flicker
+are decorative and can differ. No desktop bloom compositor is used in split view.
+Effects and marks are temporary and are cleared by a page refresh. Voice, Python
+backend and DataFeel integration are not enabled by this effects adapter.
+
 ## Interfaces and ownership
 
 - `../vite.eileen.config.js`: extends the shared Vite config without modifying it.
@@ -93,11 +117,15 @@ export before refreshing the computer page, since a refresh discards local annot
 - `../src/eileen-pose-alignment.js`: yaw + translation + scale transform.
 - `../src/eileen-xr-room.js`: textured scan loading and inverse room transform.
 - `../src/eileen-xr-annotations.js`: live labels, markers and route arrows.
+- `../src/eileen-effects.js`: team effect adapter and opt-in local audio.
+- `../src/eileen-effects-state.js`: validated effect snapshot contract and smoke timing.
 - `../src/desktop.js`: observer and receiver. Its existing `updateHeadPose()` still
   takes room-space poses; this connection transforms incoming XR poses first.
 
 Custom WebSocket events: `eileen:join`, `eileen:joined`, `eileen:pose`,
 `eileen:tracking`, `eileen:error`, `eileen:leave`, `eileen:alignment`, `eileen:annotations`.
+`eileen:effects` carries version, roomId, running, elapsed, floorY, ceilingY, center,
+size and up to 20 fire positions, only from an observer to its paired headset.
 Annotation snapshots contain roomId and up to 500 items (type, position, source),
 validated and forwarded only from an observer to its paired headset.
 Calibration messages
@@ -140,7 +168,7 @@ the 32-character pairing-code limit does not apply to session IDs. Regression
 tests use real UUIDs to verify forwarding.
 
 Run relay and coordinate-transform regression tests from `web`:
-`node --test eileen/pose.test.mjs`.
+`node --test eileen/pose.test.mjs eileen/effects.test.mjs`.
 
 Build both entries: `npm run build -- --config vite.eileen.config.js`.
 Static builds show connection unavailable: this relay requires the development server.

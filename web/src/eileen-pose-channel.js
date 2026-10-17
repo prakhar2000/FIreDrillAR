@@ -1,12 +1,12 @@
 /** Local-demo transport. Uses Vite's documented custom WebSocket events.
  * Static builds intentionally report unavailable rather than pretending to connect.
  */
-export function connectPoseChannel({ role, room, onPose = () => {}, onAnnotations = () => {}, onAlignment = () => {}, onTracking = () => {}, onStatus = () => {} }) {
+export function connectPoseChannel({ role, room, onPose = () => {}, onEffects = () => {}, onAnnotations = () => {}, onAlignment = () => {}, onTracking = () => {}, onStatus = () => {} }) {
   const hot = import.meta.hot;
   let ready = false, lastAck = 0, closed = false;
   if (!hot) {
     onStatus('Live connection needs the Eileen development server.', false);
-    return { sendPose: () => false, sendAnnotations() {}, sendAlignment() {}, tracking() {}, close() {} };
+    return { sendPose: () => false, sendEffects() {}, sendAnnotations() {}, sendAlignment() {}, tracking() {}, close() {} };
   }
   const joined = (data) => {
     if (data.room !== room || data.role !== role || closed) return;
@@ -30,6 +30,7 @@ export function connectPoseChannel({ role, room, onPose = () => {}, onAnnotation
   hot.on('eileen:pose', pose);
   hot.on('eileen:alignment', onAlignment);
   hot.on('eileen:annotations', onAnnotations);
+  hot.on('eileen:effects', onEffects);
   hot.on('eileen:tracking', tracking);
   hot.on('vite:ws:disconnect', disconnected);
   hot.on('vite:ws:connect', join);
@@ -45,6 +46,7 @@ export function connectPoseChannel({ role, room, onPose = () => {}, onAnnotation
     hot.off('eileen:pose', pose);
     hot.off('eileen:alignment', onAlignment);
     hot.off('eileen:annotations', onAnnotations);
+    hot.off('eileen:effects', onEffects);
     hot.off('eileen:tracking', tracking);
     hot.off('vite:ws:disconnect', disconnected);
     hot.off('vite:ws:connect', join);
@@ -52,6 +54,7 @@ export function connectPoseChannel({ role, room, onPose = () => {}, onAnnotation
   };
   window.addEventListener('pagehide', close);
   return {
+    sendEffects(data) { if (ready && !closed) hot.send('eileen:effects', data); },
     sendAnnotations(data) { if (ready && !closed) hot.send('eileen:annotations', data); },
     sendAlignment(data) { if (ready && !closed) hot.send('eileen:alignment', data); },
     sendPose(data) {

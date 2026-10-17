@@ -1,5 +1,6 @@
 // Eileen's development-only relay over Vite's existing secure WebSocket.
 // One publisher per pairing code; observers receive only their own room.
+import { validEffectsState } from '../src/eileen-effects-state.js';
 export function poseRelay() {
   return {
     name: 'eileen-pose-relay',
@@ -79,6 +80,16 @@ export function poseRelay() {
       };
       server.ws.on('eileen:join', join);
       server.ws.on('eileen:pose', pose);
+      server.ws.on('eileen:effects', (data, client) => {
+        const member = members.get(client);
+        if (member?.role !== 'observer' || !validEffectsState(data)) return;
+        const snapshot = { version: 1, roomId: data.roomId, running: data.running,
+          elapsed: data.elapsed, floorY: data.floorY, ceilingY: data.ceilingY,
+          center: data.center, size: data.size, fires: data.fires };
+        for (const [peer, publisher] of members) {
+          if (publisher.role === 'publisher' && publisher.room === member.room) send(peer, 'eileen:effects', snapshot);
+        }
+      });
       server.ws.on('eileen:annotations', (data, client) => {
         const member = members.get(client);
         if (member?.role !== 'observer' || data?.roomId !== '10_17_2026'

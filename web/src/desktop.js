@@ -4,6 +4,7 @@ import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
 import { connectPoseChannel } from './eileen-pose-channel.js';
 import { createAlignment, alignPose } from './eileen-pose-alignment.js';
+import { createRoomEffects } from './eileen-effects.js';
 import scanObjUrl from '../../10_17_2026/10_17_2026.obj?url';
 import scanMtlUrl from '../../10_17_2026/10_17_2026.mtl?url';
 import scanTextureOne from '../../10_17_2026/textures/dd3d245ca8809c56baa2936ab44c0a87.jpg?url';
@@ -161,6 +162,22 @@ function syncAnnotations(state) {
     items: state.scan?.model.visible ? state.layouts.scan : [] });
 }
 
+function refreshEffects(state) {
+  const scanned = Boolean(state.scan?.model.visible);
+  const center = state.bounds.getCenter(new THREE.Vector3());
+  const size = state.bounds.getSize(new THREE.Vector3());
+  const snapshot = { version: 1, roomId: scanned ? '10_17_2026' : 'sample-room',
+    running: state.effectsRunning, elapsed: state.effectsRunning
+      ? Math.min(86400, (performance.now() - state.effectsStartedAt) / 1000) : 0,
+    floorY: state.floorY, ceilingY: Math.max(state.floorY + 2, state.bounds.max.y),
+    center: [center.x, center.z], size: Math.min(100, Math.max(1, size.x, size.z)),
+    fires: state.firePositions[scanned ? 'scan' : 'sample'] };
+  state.effects.apply(snapshot);
+  state.poseChannel?.sendEffects?.(snapshot);
+  state.panel.querySelector('[data-effects-status]').textContent =
+    `${snapshot.fires.length} fire sources · ${snapshot.running ? 'Smoke running' : 'Smoke stopped'} · Fixed fire patches (no spreading)`;
+}
+
 function invalidateAutoRoute(state) {
   const items = state.layouts[state.scan?.model.visible ? 'scan' : 'sample'];
   for (let i = items.length - 1; i >= 0; i--) {
@@ -177,7 +194,8 @@ function setAnnotationTool(state, tool = null) {
     button.setAttribute('aria-pressed', String(button.dataset.mark === tool));
     button.style.background = button.dataset.mark === tool ? '#22694f' : '#263b4e';
   }
-  state.panel.querySelector('[data-edit]').textContent = tool === 'exit'
+  state.panel.querySelector('[data-edit]').textContent = tool === 'fire'
+    ? 'Click a surface to place a fire. Routes near fire sources are invalidated. Press Esc when done.' : tool === 'exit'
     ? 'Click the floor at a known exit. Choose another tool or press Esc when done.'
     : tool === 'blocked' ? 'Click the floor at a blocked passage. Press Esc when done.'
       : tool === 'waypoint' ? 'Click floor points in travel order, including turns around obstacles and the exit. Finish route or Esc ends drawing.'
@@ -188,7 +206,7 @@ function setAnnotationTool(state, tool = null) {
  * Missing floor and geometry in the standing-height band are impassable.
  * Four-neighbor search never cuts diagonally between occupied cells.
  */
-export function planRoomRoute({ surface, bounds, floorY, start, exits, blocked = [] }) {
+export function planRoomRoute({ surface, bounds, floorY, start, exits, blocked = [], hazards = [], hazardRadius = 1.5 }) {
   if (!exits.length) return { error: 'Mark at least one known exit first.' };
   const step = 0.2;
   const width = Math.ceil((bounds.max.x - bounds.min.x) / step);
@@ -245,6 +263,7 @@ export function planRoomRoute({ surface, bounds, floorY, start, exits, blocked =
   for (let id = 0; id < total; id++) {
     const p = point(id);
     if (blocked.some((b) => Math.hypot(p.x - b[0], p.z - b[2]) < 0.6)) obstacles[id] = 1;
+    if (hazards.some((h) => Math.hypot(p.x - h[0], p.z - h[2]) < hazardRadius)) obstacles[id] = 1;
   }
   // One-cell buffer around obstacles, missing floor, and scan boundaries.
   const walkable = new Uint8Array(total);
@@ -301,6 +320,7 @@ function calculateRoute(state) {
     bounds: state.bounds, floorY: state.floorY, start: routeStart.toArray(),
     exits: items.filter((item) => item.type === 'exit').map((item) => item.position),
     blocked: items.filter((item) => item.type === 'blocked').map((item) => item.position),
+    hazards: state.firePositions[room], hazardRadius: 1.5 * (state.alignment?.scale || 1),
   });
   if (result.error) { state.panel.querySelector('[data-edit]').textContent = result.error; return; }
   state.layouts[room] = items.filter((item) => item.type !== 'waypoint').concat(
@@ -451,6 +471,14 @@ export function start(options = {}) {
       <p data-edit role="status"></p>
       <p data-route-status role="status" hidden style="padding:12px;border:1px solid #edbe65;background:#302b20;color:#ffe0a3"></p>
       <p data-layout></p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button type="button" data-mark="fire" aria-pressed="false">Place fire</button>
+        <button type="button" data-action="start-effects">Start smoke</button>
+        <button type="button" data-action="stop-effects">Stop smoke</button>
+        <button type="button" data-action="clear-fires">Clear fires</button>
+        <button type="button" data-action="effects-sound" aria-pressed="false">Enable sound</button>
+      </div>
+      <p data-effects-status role="status"></p>
       <p data-load role="status">Loading 10_17_2026 scan… You can use the sample room while it loads.</p>
       <p data-status role="status" aria-live="polite"></p>
       <output data-pose style="font-family:monospace"></output>
@@ -478,6 +506,7 @@ export function start(options = {}) {
   const scene = options.scene || new THREE.Scene();
   const camera = options.camera || new THREE.PerspectiveCamera(45, 1, 0.05, 100);
   const followCamera = new THREE.PerspectiveCamera(75, 1, 0.03, 1000);
+  if (!shared) scene.add(followCamera);
   const root = new THREE.Group();
   root.name = 'eileen-room-observer';
   scene.add(root);
@@ -525,6 +554,8 @@ export function start(options = {}) {
     lastPose: null, yaw: 0, lastFrame: performance.now(), raf: 0, lastText: '',
     annotationTool: null, layouts: { sample: [], scan: [] }, annotations: new THREE.Group(),
     poseChannel: null, rawPose: null, rawPoseAt: 0, alignment: null, headsetEnabled: false,
+    firePositions: { sample: [], scan: [] }, effectsRunning: false, effectsStartedAt: 0,
+    effects: createRoomEffects(root), soundEnabled: false,
   };
   const invalidateAlignment = (message) => {
     state.alignment = null; state.rawPose = null; state.lastPose = null;
@@ -548,7 +579,7 @@ export function start(options = {}) {
     panel.querySelector('[data-headset-link]').href = `/eileen-xr.html?room=${encodeURIComponent(room)}`;
     state.poseChannel = connectPoseChannel({ role: 'observer', room,
       onStatus(message, ready) {
-        if (ready) syncAnnotations(state);
+        if (ready) { syncAnnotations(state); refreshEffects(state); }
         panel.querySelector('[data-connection]').textContent = `${message} · Pairing code: ${room}`;
         if (!ready) {
           state.rawPose = null;
@@ -625,6 +656,7 @@ export function start(options = {}) {
     state.keys.clear();
   };
   state.selectRoom = (choice) => {
+    state.effectsRunning = false;
     state.roomChoice = choice;
     const scanned = choice === 'scan' && state.scan;
     sample.visible = !scanned;
@@ -642,6 +674,7 @@ export function start(options = {}) {
       : 'Sample room · 6 × 4 m · 1 m grid';
     if (state.mode === 'simulation') resetSimulation();
     redrawAnnotations(state);
+    refreshEffects(state);
     setView(state.viewTop);
   };
   const onClick = (event) => {
@@ -654,6 +687,25 @@ export function start(options = {}) {
       resize();
     }
     const mark = event.target.dataset.mark;
+    if (action === 'start-effects') {
+      if (!state.firePositions[state.scan?.model.visible ? 'scan' : 'sample'].length) {
+        panel.querySelector('[data-effects-status]').textContent = 'Place at least one fire first.';
+      } else {
+        if (!state.effectsRunning) state.effectsStartedAt = performance.now();
+        state.effectsRunning = true; refreshEffects(state);
+      }
+    }
+    if (action === 'stop-effects') { state.effectsRunning = false; refreshEffects(state); }
+    if (action === 'clear-fires') {
+      state.firePositions[state.scan?.model.visible ? 'scan' : 'sample'] = [];
+      state.effectsRunning = false; invalidateAutoRoute(state); refreshEffects(state);
+    }
+    if (action === 'effects-sound') {
+      state.soundEnabled = !state.soundEnabled;
+      state.effects.enableSound(state.mode === 'live' && state.dualView ? followCamera : camera, state.soundEnabled);
+      event.target.textContent = state.soundEnabled ? 'Mute sound' : 'Enable sound';
+      event.target.setAttribute('aria-pressed', String(state.soundEnabled));
+    }
     if (mark && !shared) setAnnotationTool(state, state.annotationTool === mark ? null : mark);
     const items = state.layouts[state.scan?.model.visible ? 'scan' : 'sample'];
     if (action === 'finish') setAnnotationTool(state);
@@ -722,6 +774,11 @@ export function start(options = {}) {
       return;
     }
     if (state.annotationTool) {
+      if (state.annotationTool === 'fire') {
+        const fires = state.firePositions[state.scan?.model.visible ? 'scan' : 'sample'];
+        if (fires.length >= 20) { panel.querySelector('[data-effects-status]').textContent = 'Maximum 20 fires. Clear fires to start again.'; return; }
+        fires.push(hit.point.toArray()); invalidateAutoRoute(state); refreshEffects(state); return;
+      }
       // A changed exit, obstacle or manually drawn path invalidates the draft.
       invalidateAutoRoute(state);
       const items = state.layouts[state.scan?.model.visible ? 'scan' : 'sample'];
@@ -744,6 +801,7 @@ export function start(options = {}) {
     invalidateAutoRoute(state);
     // Explicit picking returns to simulation, never moves a live headset pose.
     resetSimulation();
+    refreshEffects(state);
     state.pickingSpawn = false;
     panel.querySelector('[data-action="spawn"]').textContent = 'Set start on floor';
     panel.querySelector('[data-load]').textContent = 'Simulation start and floor height set. Connect and align the headset to resume live tracking.';
@@ -793,6 +851,8 @@ export function start(options = {}) {
   state.cleanup = () => {
     state.disposed = true;
     state.poseChannel?.close();
+    state.effects.dispose();
+    if (!shared) followCamera.removeFromParent();
     cancelAnimationFrame(state.raf);
     observer.disconnect();
     panel.removeEventListener('click', onClick);
@@ -815,6 +875,7 @@ export function start(options = {}) {
   active = state;
   setAnnotationTool(state);
   redrawAnnotations(state);
+  refreshEffects(state);
   setView(false);
   resize();
   update(0);
@@ -828,6 +889,7 @@ export function start(options = {}) {
       renderer.setScissorTest(true);
       renderer.setViewport(0, 0, leftWidth, height);
       renderer.setScissor(0, 0, leftWidth, height);
+      state.effects.beforeView(camera, false);
       renderer.render(scene, camera);
       if (state.dualView) {
         renderer.setViewport(leftWidth, 0, width - leftWidth, height);
@@ -845,6 +907,7 @@ export function start(options = {}) {
           followCamera.updateProjectionMatrix();
           const visibility = [marker.visible, head.visible, arrow.visible];
           marker.visible = head.visible = arrow.visible = false;
+          state.effects.beforeView(followCamera, true);
           renderer.render(scene, followCamera);
           [marker.visible, head.visible, arrow.visible] = visibility;
         } else renderer.clear();
@@ -891,6 +954,7 @@ export function update(dt = 0) {
     s.position.y = s.floorY + (s.keys.has('KeyC') ? 0.9 : 1.6);
   }
   const waiting = s.mode === 'live' && s.lastPose === null;
+  s.effects.update(step, waiting ? s.floorY + 1.6 : s.position.y);
   const stale = s.mode === 'live' && !waiting && performance.now() - s.lastPose > 2000;
   s.marker.visible = s.head.visible = s.arrow.visible = !waiting;
   s.marker.position.set(s.position.x, s.floorY + 0.04, s.position.z);
