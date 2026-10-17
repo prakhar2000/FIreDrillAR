@@ -116,6 +116,10 @@ Smaller:
 - **Python deps:** `requirements.txt` is written by hand, not `pip freeze` (a Mac freeze pins `uvloop`, which won't install on Windows).
 - **Code:** lowercase filenames, imports match case exactly; `path.join` / `pathlib`, no hard-coded slashes; no `rm`/`cp`/`VAR=x cmd` in `package.json` scripts.
 - **Sign text:** name a font both have (`bold 64px Arial`).
+- **npm lockfile:** Rollup/esbuild ship per-OS binaries, and a `package-lock.json` made on a Mac can miss the Windows one (`Cannot find module @rollup/rollup-win32-x64-msvc`). Fix: delete `node_modules` and `npm install`; still broken → also delete `package-lock.json`, reinstall, commit it.
+- **Quest over USB (fallback if the hotspot fails):** Quest developer mode on, plug in, run `adb reverse tcp:5173 tcp:5173`, open `https://localhost:5173` in the Quest. Same cable lets desktop Chrome debug the Quest browser at `chrome://inspect`. Mac needs no driver; a Windows laptop needs Meta's Quest ADB driver.
+- **Quest Link / Air Link are Windows-only. We don't use them** (we run in the Quest browser); ignore tutorials that assume them.
+- **Certificate:** the Quest must accept the warning again whenever the laptop's IP changes (e.g. rejoining the hotspot). Looks like a "broken" page, isn't.
 
 ---
 
@@ -172,7 +176,8 @@ firedrill/
   data/                     room.json and drill logs (commit room.json so everyone gets it)
   pitch/                    (Emma)    script, slides, video
   README.md                 this handbook
-  CLAUDE.md                 shared Claude instructions (CLAUDE.local.md = personal, gitignored)
+  AGENTS.md                 shared agent instructions (all agents read this)
+  CLAUDE.md                 just imports AGENTS.md for Claude Code (CLAUDE.local.md = personal, gitignored)
 ```
 
 **`web/vite.config.js`** (replace the generated one). It serves over HTTPS, lets the Quest reach the laptop, saves `room.json` and drill logs into `data/`, and forwards `/py/...` to Devaj's Python server:
