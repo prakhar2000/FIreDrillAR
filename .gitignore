@@ -1,0 +1,6 @@
+node_modules/
+.venv/
+.env
+dist/
+CLAUDE.local.md
+.claude/settings.local.json
