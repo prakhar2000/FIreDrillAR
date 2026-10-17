@@ -3,6 +3,7 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 
 /* =====================================================================
    FireDrill AR — effects.js   (owner: Varnika)
@@ -1019,6 +1020,7 @@ function flameMaterial() {
     uniforms: {
       uNoise: { value: noiseTexture() }, uTime: { value: 0 }, uScroll: { value: new THREE.Vector3() },
       uSheet: { value: flipbookTexture() }, uSheetOn: { value: 0 }, uLinear: LINEAR_OUT,
+      uFlare: { value: new THREE.Vector4(0, 0, 1, 0) },
     },
     vertexShader: /* glsl */ `
       attribute vec2 aQuad;    // x: -1..1 across, y: 0..1 up
@@ -1026,6 +1028,8 @@ function flameMaterial() {
       attribute vec4 iShape;   // x: width, y: height, z: burn 0–1, w: unused
       uniform float uTime;
       uniform float uSheetOn;
+      uniform sampler2D uNoise;
+      uniform vec4 uFlare;     // flare-up: xy = world x/z, z = radius (m), w = amount 0–1
       varying vec2 vUv;
       varying float vSeed;
       varying float vBurn;
@@ -1044,15 +1048,21 @@ function flameMaterial() {
         vec2 d = normalize(cameraPosition.xz - base.xz + vec2(1e-4, 0.0));
         vec3 side = vec3(-d.y, 0.0, d.x);
         float s = iPos.w * 6.2832;
-        // each tongue breathes on its own; tips sway, the base stays put
-        float h = iShape.y * (0.86 + 0.1 * sin(uTime * 2.3 + s) + 0.06 * sin(uTime * 5.7 + s * 3.1));
+        // irregular licks, not a steady loop: a slow swell plus sharp spikes, from noise per tongue
+        // (rates × 1000 are whole numbers, so the CPU's time wrap at 1000 s doesn't jump)
+        float slow = texture2D(uNoise, vec2(iPos.w * 0.71, uTime * 0.09)).r;
+        float fast = texture2D(uNoise, vec2(iPos.w * 0.37 + 0.5, uTime * 0.37)).r;
+        float lick = 0.55 + 0.5 * slow + 0.75 * fast * fast * fast;
+        // flare-up: tongues near it shoot up and widen for a moment
+        float flare = uFlare.w * (1.0 - smoothstep(0.0, uFlare.z, length(base.xz - uFlare.xy)));
+        float h = iShape.y * lick * (1.0 + 0.9 * flare);
         float sway = (sin(uTime * 1.9 + s) + 0.6 * sin(uTime * 3.3 + s * 2.7)) * 0.07 * h * aQuad.y * aQuad.y;
         // the flipbook flame fills about half its frame's width: widen the quad to match
-        float wq = iShape.x * mix(1.0, 1.7, uSheetOn);
+        float wq = iShape.x * mix(1.0, 1.7, uSheetOn) * (1.0 + 0.25 * flare);
         vec3 w = base + side * (aQuad.x * 0.5 * wq + sway * (1.0 - 0.7 * uSheetOn)) + vec3(0.0, aQuad.y * h, 0.0);
         vUv = aQuad;
         vSeed = iPos.w;
-        vBurn = iShape.z;
+        vBurn = min(1.0, iShape.z + 0.5 * flare);
         gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0);
       }`,
     fragmentShader: /* glsl */ `
@@ -1083,8 +1093,16 @@ function flameMaterial() {
           float fa = smoothstep(0.02, 0.45, hm) * smoothstep(0.0, 0.06, y) * (1.0 - smoothstep(0.9, 1.0, y));
           fa *= 0.55 + 0.45 * vBurn;
           if (fa < 0.004) discard;
+          // layered like a real fire: yellow-white core low down, orange body, dark red tips
+          // (brightness stands in for temperature; the black smoke takes over above the tips)
+          float core = smoothstep(0.65, 0.95, hm) * (1.0 - smoothstep(0.08, 0.35, y)) * (0.3 + 0.5 * vBurn);
+          float tip = smoothstep(0.4, 0.9, y) * (1.0 - smoothstep(0.65, 0.95, hm));
+          vec3 fc = mix(vec3(1.0, 0.4, 0.05), vec3(1.0, 0.6, 0.16), smoothstep(0.3, 0.8, hm));
+          fc = mix(fc, vec3(1.0, 0.88, 0.6), core);
+          fc = mix(fc, vec3(0.55, 0.06, 0.01), tip);
+          fc *= mix(0.75, 1.0, vBurn);
+          fa *= 1.0 - 0.4 * tip;
           // same blending as the procedural flame: bright cores "over", dim edges additive
-          vec3 fc = sc / max(hm, 0.001) * mix(0.75, 1.0, vBurn);
           gl_FragColor = vec4(fc * fa, fa * mix(0.1, 0.85, smoothstep(0.25, 0.75, hm)));
           ${LINEAR_GLSL}
           return;
@@ -1234,11 +1252,13 @@ export class FireSystem {
     this._surfacesSet = false;
     this._camPos = new THREE.Vector3(0, 1.6, 0);
     this._debug = false;
+    this._flare = { age: 99, next: 5 + 5 * Math.random(), x: 0, z: 0, r: 1, amount: 0, spot: -1 };
     // firelight for the surface overlays (shared by all of them)
     this._lightU = { value: Array.from({ length: MAX_LIGHTS }, () => new THREE.Vector4(0, -50, 0, 0)) };
 
     this.group = new THREE.Group();
     this.group.name = 'FireSystem';
+    this.group.userData.fireSystem = this; // createFireBloom finds it here for the heat shimmer
     scene?.add(this.group);
 
     // surface overlays (rebuilt with the fuel)
@@ -1367,6 +1387,7 @@ export class FireSystem {
     fu.uTime.value = t % 1000; // vertex shader (highp): sway
     fu.uScroll.value.set((t * 0.42) % 1, (t * 0.31 * 2.3) % 1, (t * 0.9 * 5.1) % 1);
     for (const o of this._overlays) o.mat.uniforms.uFlow.value.set((t * 0.06) % 1, (t * 0.1) % 1);
+    this._updateFlare(dt, running);
     this._updateEmbers(dt);
     this._updateSmoke(dt);
     this._updateGlow(dt);
@@ -1499,6 +1520,56 @@ export class FireSystem {
     fl.iShape.needsUpdate = true;
   }
 
+  // --- flare-ups: every 5–10 s one fire bursts taller, with sparks, smoke and a flash ---
+  _updateFlare(dt, running) {
+    const fx = this._flare, spots = this.sim.hotspots;
+    fx.age += dt;
+    fx.next -= dt * (running ? 1 : 0.5);
+    if (fx.next <= 0 && spots.length) {
+      fx.next = 5 + 5 * Math.random();
+      fx.age = 0;
+      fx.spot = (Math.random() * Math.min(3, spots.length)) | 0;
+      const h = spots[fx.spot];
+      fx.x = h.position.x; fx.z = h.position.z;
+      fx.r = 0.6 + 0.9 * Math.sqrt(h.area);
+      this._burst(h, fx.r);
+    }
+    // quick rise (0.25 s), slower fall (1.3 s)
+    const a = fx.age < 0.25 ? fx.age / 0.25 : Math.max(0, 1 - (fx.age - 0.25) / 1.3);
+    fx.amount = a * a * (3 - 2 * a);
+    this._flames.mesh.material.uniforms.uFlare.value.set(fx.x, fx.z, fx.r, fx.amount);
+  }
+
+  // extra sparks and smoke from burning cells near a hotspot
+  _burst(h, r) {
+    const s = this.sim, em = this._em, sm = this._sm;
+    const near = s.burning.filter((i) => (s.x[i] - h.position.x) ** 2 + (s.z[i] - h.position.z) ** 2 < r * r);
+    if (!near.length) return;
+    let sparks = 30, puffs = 10;
+    for (let k = 0; k < EMBER_N && sparks > 0; k++) {
+      if (em.age[k] < em.life[k]) continue;
+      const i = near[(Math.random() * near.length) | 0];
+      const fh = MATS[s.mat[i]].flameH * s.burn[i];
+      em.kind[k] = 0;
+      em.pos[k * 3] = s.x[i]; em.pos[k * 3 + 1] = s.y[i] + fh * Math.random(); em.pos[k * 3 + 2] = s.z[i];
+      em.vel[k * 3] = (Math.random() - 0.5) * 1.2;
+      em.vel[k * 3 + 1] = 1.6 + Math.random() * 2.2;
+      em.vel[k * 3 + 2] = (Math.random() - 0.5) * 1.2;
+      em.age[k] = 0;
+      em.life[k] = 1.2 + Math.random() * 1.6;
+      sparks--;
+    }
+    for (let k = 0; k < SMOKE_N && puffs > 0; k++) {
+      if (sm.age[k] < sm.life[k]) continue;
+      const i = near[(Math.random() * near.length) | 0];
+      const fh = MATS[s.mat[i]].flameH * (0.3 + 0.7 * s.burn[i]);
+      sm.pos[k * 3] = s.x[i]; sm.pos[k * 3 + 1] = Math.min(s.ceilingY - 0.2, s.y[i] + fh * 1.3); sm.pos[k * 3 + 2] = s.z[i];
+      sm.vel[k * 3] = (Math.random() - 0.5) * 0.06; sm.vel[k * 3 + 1] = 0.8 + Math.random() * 0.4; sm.vel[k * 3 + 2] = (Math.random() - 0.5) * 0.06;
+      sm.age[k] = 0; sm.life[k] = 5 + Math.random() * 3; sm.shade[k] = 0.02 + Math.random() * 0.03; sm.base[k] = 0.5 + 0.4 * fh;
+      puffs--;
+    }
+  }
+
   // --- particles ----------------------------------------------------------
   /** A random burning cell, biased toward bigger flames, or -1 */
   _randomBurning() {
@@ -1592,9 +1663,9 @@ export class FireSystem {
         // starts among the flame tips, so the flames fade up into it
         P[k * 3 + 1] = Math.min(ceil - 0.2, s.y[i] + fh * (0.7 + 0.3 * Math.random()));
         P[k * 3 + 2] = s.z[i] + (Math.random() - 0.5) * 0.2;
-        Vv[k * 3] = (Math.random() - 0.5) * 0.1;
-        Vv[k * 3 + 1] = 0.5 + Math.random() * 0.4;
-        Vv[k * 3 + 2] = (Math.random() - 0.5) * 0.1;
+        Vv[k * 3] = (Math.random() - 0.5) * 0.04; // a column rising straight up off the fire
+        Vv[k * 3 + 1] = 0.55 + Math.random() * 0.4;
+        Vv[k * 3 + 2] = (Math.random() - 0.5) * 0.04;
         sm.age[k] = 0;
         sm.life[k] = 5 + Math.random() * 3;
         sm.shade[k] = 0.02 + Math.random() * 0.04; // near-black soot
@@ -1608,9 +1679,10 @@ export class FireSystem {
       const room = ceil - 0.15 - P[k * 3 + 1];
       const up = room > 0 ? Vv[k * 3 + 1] * Math.min(1, room / 0.4) : 0;
       const spread = room < 0.4 ? 1 + 3 * (1 - room / 0.4) : 1;
-      P[k * 3] += (Vv[k * 3] * spread + Math.sin(t * 0.7 + k) * 0.05) * dt;
+      const wob = 0.015 + 0.06 * (spread - 1);
+      P[k * 3] += (Vv[k * 3] * spread + Math.sin(t * 0.7 + k) * wob) * dt;
       P[k * 3 + 1] += up * dt;
-      P[k * 3 + 2] += (Vv[k * 3 + 2] * spread + Math.cos(t * 0.6 + k) * 0.05) * dt;
+      P[k * 3 + 2] += (Vv[k * 3 + 2] * spread + Math.cos(t * 0.6 + k) * wob) * dt;
       // lit orange-brown from below at first (dark grey over flames would read olive), then black
       const v = sm.shade[k], warm = 1 - clamp01(a * 5);
       C[k * 4] = v + 0.16 * warm; C[k * 4 + 1] = v + 0.06 * warm; C[k * 4 + 2] = v + 0.015 * warm;
@@ -1650,7 +1722,7 @@ export class FireSystem {
       }
       l.userData.base += (want - l.userData.base) * k;
       const fl = flicker(t * 1.7, i * 13.7) * (0.92 + 0.08 * Math.sin(t * 31 + i * 5));
-      l.intensity = l.userData.base * fl;
+      l.intensity = l.userData.base * fl * (i === this._flare.spot ? 1 + 0.7 * this._flare.amount : 1);
       l.color.setRGB(1, 0.36 + 0.06 * fl, 0.08); // a touch yellower on the bright flickers
       // same light for the surface overlays (normalised; 0 when there's no fire)
       this._lightU.value[i].set(l.position.x, l.position.y, l.position.z, l.intensity / 30);
@@ -1724,16 +1796,75 @@ export class FireSystem {
 const _tmp = new THREE.Vector3();
 
 // ---------------------------------------------------------------------
-// Desktop bloom: flames glow and bleed light like fire on a camera.
+// Desktop bloom + heat shimmer: flames glow and bleed light like fire on a camera, and the
+// air above each fire ripples. Pass { fire } if the FireSystem isn't in `scene`.
 //   const bloom = createFireBloom(renderer, scene, camera);
 //   … then each frame call bloom.render() instead of renderer.render(scene, camera).
 // In XR it renders straight to the headset (no bloom: too costly per eye on the Quest).
 // It follows window resizes; call bloom.setSize(w, h) if your canvas isn't the window.
 // ---------------------------------------------------------------------
-export function createFireBloom(renderer, scene, camera, { strength = 0.55, radius = 0.45, threshold = 0.7 } = {}) {
+const SHIMMER_SPOTS = 4;
+const ShimmerShader = {
+  uniforms: {
+    tDiffuse: { value: null }, uTime: { value: 0 }, uAspect: { value: 1 }, uAmount: { value: 1 },
+    uSpots: { value: Array.from({ length: SHIMMER_SPOTS }, () => new THREE.Vector4()) },
+  },
+  vertexShader: /* glsl */ `
+    varying vec2 vUv;
+    void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tDiffuse;
+    uniform float uTime, uAspect, uAmount;
+    uniform vec4 uSpots[${SHIMMER_SPOTS}];   // xy: screen uv of the hot air above a fire · z: radius (u) · w: strength
+    varying vec2 vUv;
+    void main() {
+      float m = 0.0;
+      for (int k = 0; k < ${SHIMMER_SPOTS}; k++) {
+        vec4 s = uSpots[k];
+        vec2 d = (vUv - s.xy) / vec2(s.z, s.z * uAspect * 1.7); // tall oval of rising hot air
+        m += s.w * (1.0 - smoothstep(0.3, 1.0, length(d)));
+      }
+      m = min(m, 1.0) * uAmount;
+      // ripples drifting upward
+      vec2 off = vec2(
+        sin(vUv.y * 95.0 - uTime * 7.0 + sin(vUv.x * 45.0 + uTime) * 2.0),
+        cos(vUv.x * 75.0 + vUv.y * 35.0 - uTime * 5.0)) * 0.0032 * m;
+      gl_FragColor = texture2D(tDiffuse, vUv + off);
+    }`,
+};
+
+export function createFireBloom(renderer, scene, camera, { strength = 0.55, radius = 0.45, threshold = 0.7, shimmer = 1, fire = null } = {}) {
   const size = renderer.getSize(new THREE.Vector2());
   const composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
+  // heat shimmer above each fire (desktop only: this composer never runs in XR)
+  const heat = new ShaderPass(ShimmerShader);
+  heat.uniforms.uAmount.value = shimmer;
+  composer.addPass(heat);
+  let sys = fire, lookFor = 0;
+  const pc = new THREE.Vector3(), pr = new THREE.Vector3(), right = new THREE.Vector3();
+  const updateShimmer = () => {
+    if (!sys || !sys.group.parent) {
+      if (lookFor-- <= 0) { sys = scene.getObjectByName('FireSystem')?.userData.fireSystem ?? null; lookFor = 30; }
+    }
+    const u = heat.uniforms;
+    u.uTime.value = (performance.now() / 1000) % 1000;
+    u.uAspect.value = size.x / Math.max(1, size.y);
+    const spots = sys ? sys.hotspots : [];
+    camera.updateMatrixWorld();
+    right.setFromMatrixColumn(camera.matrixWorld, 0);
+    for (let k = 0; k < SHIMMER_SPOTS; k++) {
+      const v = u.uSpots.value[k], h = spots[k];
+      v.set(0, 0, 1, 0);
+      if (!h) continue;
+      const g = Math.sqrt(h.area);
+      pc.copy(h.position).setY(h.position.y + 0.45 + 0.7 * g);   // the hot air above the flames
+      pr.copy(pc).addScaledVector(right, 0.35 + 0.45 * g);
+      pc.project(camera); pr.project(camera);
+      if (pc.z > 1 || pc.z < -1) continue;                         // behind the camera
+      v.set(pc.x * 0.5 + 0.5, pc.y * 0.5 + 0.5, Math.max(0.01, Math.abs(pr.x - pc.x) * 0.5), Math.min(1, 0.4 + h.intensity));
+    }
+  };
   const bloom = new UnrealBloomPass(size.clone(), strength, radius, threshold);
   composer.addPass(bloom);
   composer.addPass(new OutputPass());
@@ -1746,8 +1877,10 @@ export function createFireBloom(renderer, scene, camera, { strength = 0.55, radi
     bloom,
     enabled: true,
     setSize,
+    shimmer: heat,
     render() {
       if (renderer.xr.isPresenting || !this.enabled) { renderer.render(scene, camera); return; }
+      updateShimmer();
       LINEAR_OUT.value = 1;
       composer.render();
       LINEAR_OUT.value = 0;
