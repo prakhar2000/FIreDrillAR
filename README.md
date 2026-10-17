@@ -82,6 +82,7 @@ An instructor builds a fire drill inside a real room in AR, using their voice an
   - **8 full-colour LEDs**
   - motion sensing (IMU; we won't use it)
 - Watch and velcro mounts are included. The El Jefe needs **its own power brick** (USB alone isn't enough).
+- **El Jefe ports (from DataFeel's devkit guide):** it has two USB-C ports. The **top** one (USB symbol) is the **serial/data** port and goes to the laptop. The one below it (battery symbol) is **charging only** (a ≥20 W charger), and Windows won't see the kit if the laptop is plugged in there. Press the El Jefe's **power button**, and its battery LED should turn **blue** once it's connected to the computer (green = charging, red = on battery). Then press each **Dot's** power button: its blue LEDs "breathe". To reset the Dots, unplug them and plug them back in.
 - **SDK (found):** official **Python** SDK `datafeel` in [DataFeel/devkit-samples](https://github.com/DataFeel/devkit-samples) `Python/` (also .NET there; no Unity needed). Not on PyPI; installed from GitHub via `server/requirements.txt`.
   - USB serial via a Silicon Labs **CP210x** chip, Modbus RTU at 115200. `discover_devices(4)` finds the port by USB ID (no hard-coded `COM3`) and returns Dots at addresses 1–4. No COM port in Device Manager → install Silicon Labs' "CP210x VCP" driver.
   - Calls we use: `registers.set_thermal_mode(ThermalMode.TEMPERATURE_TARGET)` + `registers.set_skin_temp_target(°C)`, `play_frequency(Hz, 0–1)` / `stop_vibration()`, `set_led(r, g, b)`, `disable_all_thermal()`, `registers.get_skin_temperature()` / `get_sink_temperature()`.
@@ -92,6 +93,8 @@ An instructor builds a fire drill inside a real room in AR, using their voice an
   - Hard cut-outs: skin > 40.5°C or sink > 48°C → drive to 28°C; resume below 37°C / 42°C.
   - Modbus is slow: drive the Dots from a background thread and only write when a value changes.
 - **All of the above is implemented in `server/dots.py`** (39°C max, 20°C cool pulse, those cut-outs).
+- **Hardware test (Oct 17, Dots lying on the table, not on skin):** all 4 Dots found on COM10, and the `devkit-samples` register map works with our kit. With a 39°C target, skin went 32 → 41°C in about 5 s, overshot to about 41.8°C, and the 40.5°C cut-out caught it, so heat cycled between about 36 and 42°C. Cool took skin from 36 to 28°C in about 9 s while the sink rose to 36°C. Left/right mapping is correct (left = Dots 1–2). Still to do: retest on a wrist, where skin's thermal mass should slow the overshoot.
+- **If the El Jefe shows a COM port but no Dots answer** (`No device at address 1–4`): the CP210x is USB-powered, so the port appears even when the El Jefe is off. Press its power button (LED blue), reseat the 5-pin chain, and unplug and replug the Dots.
 - **Ask Jiyi (DataFeel, on site):**
   1. What is a safe heat cap on skin? We use 39°C (`MAX_HEAT_C` in `server/dots.py`) until she gives a number.
   2. Does the `devkit-samples` Python register map match our Gen 10 firmware?
@@ -391,8 +394,8 @@ Everyone codes against these, so pieces plug together at merge time.
    - side = dot product of the direction to the fire with the head's right vector
    - `left = proximity × (0.5 − 0.5 × side)`, `right = proximity × (0.5 + 0.5 × side)`
    - Check: `node web/src/heat.check.js` (no output = pass). Distances are horizontal only, so crouching doesn't change which wrist is warm.
-3. 🚧 **Before the kit arrives:** SDK found and installed (section 4). Still to do: confirm the heat cap with Jiyi, then run `python dots.py` with the kit plugged in (logic check, then each Dot buzzes red and says which wrist it goes on).
-4. ✅ (code) / 🚧 (untested on hardware) **DataFeel driver, `server/dots.py`:**
+3. ✅ **Kit connected:** `python dots.py` finds 4 Dots on COM10 (Dots 1–2 left, 3–4 right). 🚧 Still to do: confirm the heat cap with Jiyi.
+4. ✅ (code) / ✅ (end-to-end over `/ws/heat` on hardware: heat, cut-outs, buzz, cool, mapping) / 🚧 (not yet worn on a wrist) **DataFeel driver, `server/dots.py`:**
    - left/right Dots warm by proximity (first half of the Dots = left wrist; `SWAP_SIDES` if strapped the other way), 33°C → 39°C, off when not near a fire
    - vibrate at 170 Hz on `buzz`; all Dots go to 20°C and blue on `cool`; LEDs red by heat
    - safety cut-outs and auto-reconnect; `/health` shows the Dots' status; with no kit it prints `[no Dots] L … R …` instead
