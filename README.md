@@ -371,6 +371,9 @@ Everyone codes against these, so pieces plug together at merge time.
 ```
 `left`/`right` = how hot each wrist should be (0–1). `buzz` = in smoke or at a blocked door. `cool` = reached the safe exit.
 
+**Calling it** (`heat.js`, Devaj): `connect()` once at startup (`main.js` already does), then each frame in the drill loop:
+`send({ ...heatFrom(headPos, headQuat, firePositions), buzz, cool })`. `headPos`/`headQuat` are the camera's world position and quaternion (three.js objects work as-is); `firePositions` are the fires' world positions. `send` keeps only the newest message and handles the 4/s limit and reconnects, so call it freely.
+
 ---
 
 ## 8. Build plan by person
@@ -418,10 +421,11 @@ Everyone codes against these, so pieces plug together at merge time.
 
 ### Devaj — Backend + DataFeel (`server/`, `heat.js`)
 1. **Server** from section 6.4: `/health`, `/token`, `/ws/heat` printing messages.
-2. **`heat.js` (browser side):** a WebSocket to `/py/ws/heat` that reconnects every 3 s, sending at most 4 messages per second. Heat math:
+2. ✅ **`heat.js` (browser side):** a WebSocket to `/py/ws/heat` that reconnects every 3 s, sending at most 4 messages per second. Heat math:
    - proximity = 1 at 0.5 m from the nearest fire, 0 at 4.5 m
    - side = dot product of the direction to the fire with the head's right vector
    - `left = proximity × (0.5 − 0.5 × side)`, `right = proximity × (0.5 + 0.5 × side)`
+   - Check: `node web/src/heat.check.js` (no output = pass). Distances are horizontal only, so crouching doesn't change which wrist is warm.
 3. **Before the kit arrives:** talk to Jiyi about the safe heat cap and the easiest SDK. Install the SDK and run its hello-world.
 4. **DataFeel slot:** fill in `drive_dots()`:
    - left/right Dots warm by proximity, capped
