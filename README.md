@@ -92,11 +92,11 @@ An instructor builds a fire drill inside a real room in AR, using their voice an
   - The heat sink saturates in **~15 s** of strong heat, so turn thermal off when the trainee isn't near a fire.
   - Hard cut-outs: skin > 40.5°C or sink > 48°C → drive to 28°C; resume below 37°C / 42°C.
   - Modbus is slow: drive the Dots from a background thread and only write when a value changes.
-- **All of the above is implemented in `server/dots.py`** (39°C max, 20°C cool pulse, those cut-outs).
+- **All of the above is implemented in `server/dots.py`** (38°C max, 20°C cool pulse, those cut-outs).
 - **Hardware test (Oct 17, Dots lying on the table, not on skin):** all 4 Dots found on COM10, and the `devkit-samples` register map works with our kit. With a 39°C target, skin went 32 → 41°C in about 5 s, overshot to about 41.8°C, and the 40.5°C cut-out caught it, so heat cycled between about 36 and 42°C. Cool took skin from 36 to 28°C in about 9 s while the sink rose to 36°C. Left/right mapping is correct (left = Dots 1–2). Still to do: retest on a wrist, where skin's thermal mass should slow the overshoot.
 - **If the El Jefe shows a COM port but no Dots answer** (`No device at address 1–4`): the CP210x is USB-powered, so the port appears even when the El Jefe is off. Press its power button (LED blue), reseat the 5-pin chain, and unplug and replug the Dots.
 - **Ask Jiyi (DataFeel, on site):**
-  1. What is a safe heat cap on skin? We use 39°C (`MAX_HEAT_C` in `server/dots.py`) until she gives a number.
+  1. ✅ Safe heat cap on skin: **38°C** (`MAX_HEAT_C` in `server/dots.py`; adjust there).
   2. Does the `devkit-samples` Python register map match our Gen 10 firmware?
   3. Can we keep the kit through judging?
 
@@ -394,9 +394,9 @@ Everyone codes against these, so pieces plug together at merge time.
    - side = dot product of the direction to the fire with the head's right vector
    - `left = proximity × (0.5 − 0.5 × side)`, `right = proximity × (0.5 + 0.5 × side)`
    - Check: `node web/src/heat.check.js` (no output = pass). Distances are horizontal only, so crouching doesn't change which wrist is warm.
-3. ✅ **Kit connected:** `python dots.py` finds 4 Dots on COM10 (Dots 1–2 left, 3–4 right). 🚧 Still to do: confirm the heat cap with Jiyi.
+3. ✅ **Kit connected:** `python dots.py` finds 4 Dots on COM10 (Dots 1–2 left, 3–4 right). Heat cap confirmed with Jiyi: 38°C. 🚧 Still to do: the wrist test (the same heat/buzz/cool run, with the Dots worn).
 4. ✅ (code) / ✅ (end-to-end over `/ws/heat` on hardware: heat, cut-outs, buzz, cool, mapping) / 🚧 (not yet worn on a wrist) **DataFeel driver, `server/dots.py`:**
-   - left/right Dots warm by proximity (first half of the Dots = left wrist; `SWAP_SIDES` if strapped the other way), 33°C → 39°C, off when not near a fire
+   - left/right Dots warm by proximity (first half of the Dots = left wrist; `SWAP_SIDES` if strapped the other way), 33°C → 38°C, off when not near a fire
    - vibrate at 170 Hz on `buzz`; all Dots go to 20°C and blue on `cool`; LEDs red by heat
    - safety cut-outs and auto-reconnect; `/health` shows the Dots' status; with no kit it prints `[no Dots] L … R …` instead
    - Heat changes over seconds, so start warming from a few metres away.

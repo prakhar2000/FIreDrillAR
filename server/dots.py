@@ -7,7 +7,7 @@ SDK notes and where the safety numbers come from: README section 4.
 import contextlib, io, threading, time
 
 NEUTRAL_C = 33.0     # heat 0 ~ skin temperature, feels like nothing
-MAX_HEAT_C = 39.0    # heat 1. 39 C ran safely in another DataFeel project; raise only with Jiyi's number
+MAX_HEAT_C = 38.0    # heat 1. Jiyi's cap (Oct 17); tune here
 COOL_C = 20.0        # safe-exit pulse
 REST_C = 28.0        # what a Dot is driven to after a safety cut-out
 SKIN_LIMIT_C, SINK_LIMIT_C = 40.5, 48.0      # cut-out above either
@@ -133,8 +133,8 @@ if __name__ == "__main__":
     p = plan(0, 1, False, 4)
     assert [t for t, _ in p] == [None, None, MAX_HEAT_C, MAX_HEAT_C] and p[3][1] == (255, 0, 0), p
     assert [t for t, _ in plan(1, 0, False, 2)] == [MAX_HEAT_C, None]
-    assert plan(0.5, 0, False, 2)[0] == (36.0, (127, 0, 0))
-    assert plan(0.3, 0.9, False, 1)[0][0] == 38.5             # one Dot: hotter side wins
+    assert plan(0.5, 0, False, 2)[0] == ((NEUTRAL_C + MAX_HEAT_C) / 2, (127, 0, 0))  # holds while the midpoint is on a 0.5 C step
+    assert plan(0.3, 0.9, False, 1) == plan(0.9, 0, False, 1)  # one Dot: hotter side wins
     assert [t for t, _ in plan(1, 1, True, 4)] == [COOL_C] * 4  # cool overrides heat
     assert plan(5, -1, False, 2) == [(MAX_HEAT_C, (255, 0, 0)), (None, (0, 0, 0))]  # clamped
     print("logic OK")
