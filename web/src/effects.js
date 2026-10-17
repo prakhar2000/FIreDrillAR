@@ -398,6 +398,53 @@ function flameGeometry() {
   return geo;
 }
 
+// ---------------------------------------------------------------------
+// Fire video: web/public/textures/fire.mp4 (Pixabay video #19463, credited in the README).
+// One muted, looping video shared by every fire; each billboard flame samples it, cropped to
+// the fire and keyed so only the flames remain (black background and pale smoke drop out).
+// If it can't load or play, fires stay fully procedural.
+// ---------------------------------------------------------------------
+const FIRE_VIDEO_URL = '/textures/fire.mp4';
+const VIDEO_START = 2.5;  // the clip opens on ~2 s of black
+const VIDEO_END = 44.5;   // jump back before the end so the fire never blinks out
+// where the flame sits in the frame (measured from the clip: base v 0.043, tips ~0.29, center u 0.5),
+// scaled so the clip keeps its own proportions: center u, u per flame-x unit, base v, v per flame height
+const VIDEO_RECT = new THREE.Vector4(0.5, 0.05, 0.035, 0.225);
+let _video = null;
+let _videoTex = null;
+let _videoFailed = false;
+
+function fireVideoTexture() {
+  if (_videoTex || _videoFailed || typeof document === 'undefined') return _videoTex;
+  const v = document.createElement('video');
+  v.src = FIRE_VIDEO_URL;
+  v.muted = true; // the fire sound comes from /sounds/fire.mp3
+  v.loop = true;
+  v.playsInline = true;
+  v.setAttribute('playsinline', '');
+  v.crossOrigin = 'anonymous';
+  v.preload = 'auto';
+  v.addEventListener('error', () => { _videoFailed = true; });
+  v.addEventListener('timeupdate', () => {
+    if (v.currentTime < VIDEO_START || v.currentTime > VIDEO_END) v.currentTime = VIDEO_START;
+  });
+  const tryPlay = () => { v.play().catch(() => {}); };
+  tryPlay();
+  // if autoplay is blocked, the first tap / click / key press starts it
+  addEventListener('pointerdown', tryPlay, { once: true });
+  addEventListener('keydown', tryPlay, { once: true });
+  _video = v;
+  _videoTex = new THREE.VideoTexture(v);
+  _videoTex.minFilter = _videoTex.magFilter = THREE.LinearFilter;
+  _videoTex.generateMipmaps = false;
+  return _videoTex;
+}
+
+/** 1 while the fire video is actually showing flames, else 0 */
+function fireVideoLive() {
+  return _video && !_videoFailed && !_video.paused && _video.readyState >= 2 && _video.currentTime >= VIDEO_START ? 1 : 0;
+}
+
 function flameMaterial(scale) {
   const mat = new THREE.ShaderMaterial({
     uniforms: {
@@ -408,6 +455,11 @@ function flameMaterial(scale) {
       uWidth: { value: 1 },
       uBright: { value: 1 },
       uSeed: { value: Math.random() },
+      uVideo: { value: fireVideoTexture() },
+      uVideoRect: { value: VIDEO_RECT },
+      uVideoMix: { value: 0 },
+      uVideoGain: { value: 1 },
+      uFlip: { value: Math.random() < 0.5 ? -1 : 1 }, // mirror the clip per flame so fires differ
     },
     vertexShader: /* glsl */ `
       attribute vec2 aQuad;   // x: -1..1 across, y: 0..1 up
@@ -447,6 +499,11 @@ function flameMaterial(scale) {
       uniform float uWidth;   // flame width factor: a thin lick when small, wide when grown
       uniform float uBright;
       uniform float uSeed;
+      uniform sampler2D uVideo;
+      uniform vec4 uVideoRect;
+      uniform float uVideoMix;  // 0 = procedural, 1 = video (billboard only)
+      uniform float uVideoGain; // dimmer where several video flames overlap (all show the same frame)
+      uniform float uFlip;
       varying vec2 vUv;
       varying float vFade;
       varying float vSeed;
@@ -478,7 +535,6 @@ function flameMaterial(scale) {
         // heat: hottest low and central, eroded by noise toward the tips (licks)
         float heat = body * (1.25 - 0.8 * yd) - (1.0 - n) * (0.15 + 0.9 * yd) - (1.0 - tongues) * 0.9 * yd * yd;
         heat = clamp(heat * 1.6, 0.0, 1.0);
-        if (heat <= 0.0) discard;
 
         // transparent → deep red → orange → yellow → near-white core. Every stop has G <= R,
         // so additive overlaps can clip to yellow-white but never tint green.
@@ -492,7 +548,29 @@ function flameMaterial(scale) {
         // and softly at the very bottom so the base doesn't end in a hard line
         float edge = (1.0 - smoothstep(0.7, 1.0, abs(vUv.x))) * (1.0 - smoothstep(0.85, 1.0, vUv.y)) * smoothstep(0.0, 0.05, vUv.y);
         float a = smoothstep(0.0, 0.3, heat) * vFade * edge;
-        gl_FragColor = vec4(c * (a * uBright), a);
+        vec3 col = c * a;
+
+        // video flame on the billboard: crop to the fire, scale with the flame (x, y already follow
+        // intensity), keep warm pixels and the white core low down; background and smoke drop out
+        float vm = uVideoMix * (1.0 - vKind);
+        // with the video showing, the procedural crossed planes only add a faint warm volume
+        float crossDim = 1.0 - 0.75 * uVideoMix * vKind;
+        col *= crossDim;
+        a *= crossDim;
+        if (vm > 0.0) {
+          vec2 vu = vec2(uVideoRect.x + x * uFlip * uVideoRect.y, uVideoRect.z + y * uVideoRect.w);
+          float inside = step(0.0, vu.x) * step(vu.x, 1.0) * step(0.0, vu.y) * step(vu.y, 1.0);
+          vec3 vc = texture2D(uVideo, vu).rgb;
+          float warm = smoothstep(0.06, 0.3, vc.r - vc.b);
+          float hot = smoothstep(0.7, 0.95, max(vc.r, vc.g)) * (1.0 - smoothstep(0.45, 0.8, y)); // white core, not smoke
+          float k = max(warm, hot) * inside * edge;
+          vc.g = min(vc.g, vc.r); // never green-dominant
+          k *= uVideoGain;
+          col = mix(col, vc * k, vm);
+          a = mix(a, k * vc.r, vm);
+        }
+        if (a <= 0.002) discard;
+        gl_FragColor = vec4(col * uBright, a);
       }`,
     transparent: true,
     depthWrite: false,
@@ -502,7 +580,9 @@ function flameMaterial(scale) {
 }
 
 // Drive one flame material: upward noise scroll, height and width from intensity, flicker
-function setFlameUniforms(u, t, intensity, fl, fl2, widthMul = 1) {
+function setFlameUniforms(u, t, intensity, fl, fl2, widthMul = 1, videoMix = 0, videoGain = 1) {
+  u.uVideoMix.value = videoMix;
+  u.uVideoGain.value = videoGain;
   const rise = t * 0.16; // wrapped per octave so the shader stays at small numbers
   u.uScroll.value.set(rise % 1, (rise * 2.1) % 1, (rise * 4.3) % 1, (rise * 8.9) % 1);
   u.uHeight.value = (FLAME_NOMINAL_H / FLAME_H) * (0.3 + 0.7 * intensity) * (0.9 + 0.1 * fl2);
@@ -528,6 +608,7 @@ export class Fire {
     this._clusters = [];   // extra flames creeping across a large surface (see spreadOver)
     this._widthMul = 1;    // wider flames on big surfaces, so neighbouring clusters merge
     this._scorchMax = Infinity; // scorch never wider than the surface it's on
+    this._videoMix = 0;    // 0 = procedural billboard, 1 = fire video
     this.age = 0;
     this.sound = null;
     this._wantSound = false;
@@ -658,7 +739,10 @@ export class Fire {
 
     // flame shader: scroll noise upward (wrapped per octave so the shader stays at small numbers)
     const u = this._flameMat.uniforms;
-    setFlameUniforms(u, t, this.intensity, fl, fl2, this._widthMul);
+    // ease into the video once it's playing (and back out if it stops)
+    this._videoMix += (fireVideoLive() - this._videoMix) * Math.min(1, dt * 3);
+    // with creeping clusters next to it, keep the overlapping video flames from blowing out to white
+    setFlameUniforms(u, t, this.intensity, fl, fl2, this._widthMul, this._videoMix, this._clusters.length ? 0.7 : 1);
     this._updateClusters(t);
 
     // share of the particle budget for embers and puffs (smoldering wisps take theirs first)
@@ -790,7 +874,7 @@ export class Fire {
       const ss = Math.min(cs * 0.9, c.scorchMax);
       c.scorch.scale.set(ss, 1, ss);
       const fl = flicker(t, c.seed), fl2 = flicker(t * 1.3, c.seed + 17);
-      setFlameUniforms(c.mat.uniforms, t + c.seed, this.intensity * (0.4 + 0.6 * e), fl, fl2, this._widthMul);
+      setFlameUniforms(c.mat.uniforms, t + c.seed, this.intensity * (0.4 + 0.6 * e), fl, fl2, this._widthMul, this._videoMix, 0.5);
     }
   }
 

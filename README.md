@@ -142,6 +142,7 @@ firedrill/
     index.html
     vite.config.js          (Prakhar)
     public/sounds/          (Emma: fire.mp3, alarm.mp3)
+    public/textures/        (Varnika: fire.mp4, video used for the flames; credit Pixabay)
     src/
       main.js               (Prakhar) app loop, AR session, pinches, scenario functions
       room.js               (Prakhar) room scan → surfaces, save/load room.json
@@ -379,7 +380,8 @@ Everyone codes against these, so pieces plug together at merge time.
 5. **Record an AR clip** before the Quest goes back (Quest: Camera → Record video). Try to rebook the Quest near judging for a clean final recording.
 
 ### Varnika — Effects (`effects.js`)
-- **Fire, smoke, head fog, signs, spread:** ✅ done in test page (`/effects-test.html`) · **Visual polish:** ✅ done (readable signs at 3 m, visible smoke ceiling reaching 1.6 m in 15–18 s, fire under a 2,000-particle / 4-light budget) · **Realistic fire:** ✅ done (noise-shader flames, embers, scorch marks, breathing light, glow through smoke) · **Fire behaviour:** ✅ done (heat-based spread with smoldering, fires grow and creep across furniture, smoke follows total fire size, open exits stay clear; heat bars: H or `?heat=1`) · next: 🚧 test in the Quest
+- **Fire, smoke, head fog, signs, spread:** ✅ done in test page (`/effects-test.html`) · **Visual polish:** ✅ done (readable signs at 3 m, visible smoke ceiling reaching 1.6 m in 15–18 s, fire under a 2,000-particle / 4-light budget) · **Realistic fire:** ✅ done (noise-shader flames, embers, scorch marks, breathing light, glow through smoke) · **Fire behaviour:** ✅ done (heat-based spread with smoldering, fires grow and creep across furniture, smoke follows total fire size, open exits stay clear; heat bars: H or `?heat=1`) · **Fire video:** ✅ done (real flame footage on each fire, procedural fallback) · next: 🚧 test in the Quest
+- **Credit (for the submission form):** the flame footage in `web/public/textures/fire.mp4` is from **Pixabay** (video #19463, `https://cdn.pixabay.com/video/2018/11/21/19463-302196108.mp4`). Emma: list it under credits / third-party assets.
 1. **Fire:** about 80–100 particles with a soft round texture and additive blending. Colour runs yellow → orange → dark red as they rise; add a flickering orange `PointLight`. `intensity` grows slowly during the drill.
 2. **Smoke layer:** a few stacked gray translucent planes starting at the ceiling height and dropping slowly to about 1.1 m, faster with more fires. Add gray smoke puffs rising from each fire.
 3. **Head fog:** a gray sphere (BackSide, depthTest off) attached to the camera, with opacity rising as the head goes above the smoke layer. `update()` returns how deep the head is in smoke (0–1).
