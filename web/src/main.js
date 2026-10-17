@@ -7,7 +7,7 @@ import { Fire, Smoke, ExitSign, createFireBloom } from './effects.js';
 import { loadScanMesh, start as startRoom } from './room.js';
 import { start as startDesktop } from './desktop.js';
 import { drill } from './drill.js';
-import { parseCommand, start as startVoice } from './voice.js';
+import { start as startVoice } from './voice.js';
 import { connect as connectHeat } from './heat.js';
 
 const fires = [];
@@ -48,6 +48,7 @@ export function stopDrill(reason) {
   drillOn = false;
   smoke.stop();
   fires[0]?.stopSound();
+  setStatus('Drill stopped');
 }
 
 export function resetDrill() {
@@ -55,19 +56,20 @@ export function resetDrill() {
 }
 
 export function clearAll() {
+  drill.stop('reset');
   for (const fire of fires) fire.dispose();
   fires.length = 0;
   for (const exit of exits) exit.sprite?.removeFromParent();
   exits.length = 0;
   drillOn = false;
   smoke.reset();
+  setStatus('Scene cleared · aim at the room and say “fire”');
 }
 
 startRoom();
 startDesktop();
 startVoice();
 connectHeat();
-parseCommand('');
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setClearColor(0x111111, 1);
@@ -175,6 +177,67 @@ loadScanMesh()
   });
 
 const pointer = new THREE.Vector2();
+renderer.domElement.addEventListener('pointermove', (event) => {
+  const rect = renderer.domElement.getBoundingClientRect();
+  pointer.set(
+    ((event.clientX - rect.left) / rect.width) * 2 - 1,
+    -((event.clientY - rect.top) / rect.height) * 2 + 1,
+  );
+});
+
+function voiceTarget() {
+  if (!hitMeshes.length) return null;
+  scene.updateMatrixWorld(true);
+  if (renderer.xr.isPresenting) {
+    const head = renderer.xr.getCamera();
+    head.getWorldPosition(raycaster.ray.origin);
+    head.getWorldDirection(raycaster.ray.direction);
+  } else {
+    camera.updateMatrixWorld(true);
+    raycaster.setFromCamera(pointer, camera);
+  }
+  return raycaster.intersectObjects(hitMeshes, false)[0]?.point.clone() ?? null;
+}
+
+export function handleVoiceCommand(command) {
+  if (!command) return;
+  switch (command.type) {
+    case 'start': return startDrill();
+    case 'stop': return stopDrill('voice');
+    case 'reset': return resetDrill();
+    case 'clear': return clearAll();
+    case 'fire':
+    case 'exit':
+    case 'block': {
+      const point = voiceTarget();
+      if (!point) {
+        setStatus('No room surface targeted · move the mouse over the scan, or look at it in AR.');
+        return;
+      }
+      if (command.type === 'fire') {
+        placeFire(point);
+      } else {
+        // Reuse a nearby sign rather than stacking EXIT and BLOCKED signs.
+        const nearby = exits.find((exit) => Math.hypot(
+          exit.position.x - point.x, exit.position.z - point.z,
+        ) < 1);
+        if (nearby) nearby.setBlocked(command.type === 'block');
+        else addExit(point, command.type === 'block');
+        setStatus(command.type === 'block' ? 'Exit marked blocked' : 'Safe exit marked');
+      }
+      break;
+    }
+  }
+}
+
+window.addEventListener('firedrill:command', (event) => {
+  try { handleVoiceCommand(event.detail); }
+  catch (error) {
+    console.error('Voice action failed:', error);
+    setStatus(`Voice action failed: ${error.message}`);
+  }
+});
+
 let down = null;
 renderer.domElement.addEventListener('pointerdown', (event) => {
   down = { x: event.clientX, y: event.clientY };
