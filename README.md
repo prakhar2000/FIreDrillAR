@@ -377,6 +377,7 @@ Everyone codes against these, so pieces plug together at merge time.
 
 ### Prakhar — XR lead + host
 - **Scaffold** (Vite HTTPS app, placeholder modules, `server/app.py`): ✅ done
+- **Exported scan preview** (`10_17_2026 (1)/*.obj` in the browser): ✅ loads. Mesh is about 7.6 × 1.8 × 13.8 m.
 1. **Hello AR.** three.js scene + `ARButton` with `requiredFeatures: ['local-floor']` and `optionalFeatures: ['hand-tracking', 'plane-detection', 'mesh-detection']`. Set `renderer.xr.setReferenceSpaceType('local-floor')` and a transparent background.
    *Done when:* a cube floats in your real room.
 2. **Room reader (`room.js`).** Each frame, loop over `frame.detectedPlanes` and `frame.detectedMeshes`:
