@@ -379,6 +379,7 @@ Everyone codes against these, so pieces plug together at merge time.
 5. **Record an AR clip** before the Quest goes back (Quest: Camera → Record video). Try to rebook the Quest near judging for a clean final recording.
 
 ### Varnika — Effects (`effects.js`)
+- **Fire, smoke, head fog, signs, spread:** ✅ done in test page (`/effects-test.html`) · **Visual polish:** 🚧 next
 1. **Fire:** about 80–100 particles with a soft round texture and additive blending. Colour runs yellow → orange → dark red as they rise; add a flickering orange `PointLight`. `intensity` grows slowly during the drill.
 2. **Smoke layer:** a few stacked gray translucent planes starting at the ceiling height and dropping slowly to about 1.1 m, faster with more fires. Add gray smoke puffs rising from each fire.
 3. **Head fog:** a gray sphere (BackSide, depthTest off) attached to the camera, with opacity rising as the head goes above the smoke layer. `update()` returns how deep the head is in smoke (0–1).
