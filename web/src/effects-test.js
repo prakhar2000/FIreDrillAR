@@ -3,7 +3,7 @@
 // Quest: tap "START AR", pinch: right hand = fire, left hand = exit / blocked sign.
 import * as THREE from 'three';
 import { ARButton } from 'three/addons/webxr/ARButton.js';
-import { FireSystem, Smoke, ExitSign } from './effects.js';
+import { FireSystem, Smoke, ExitSign, createFireBloom } from './effects.js';
 
 let CEILING = 2.6;
 
@@ -109,6 +109,8 @@ function buildRoom(data) {
 // ---------- effects ----------
 const smoke = new Smoke(scene, camera); // adds itself + head fog + audio listener
 const fire = new FireSystem(scene);     // the whole room's fire: fuel comes from buildRoom()
+const bloom = createFireBloom(renderer, scene, camera); // desktop only; skipped in XR
+bloom.enabled = !new URLSearchParams(location.search).has('nobloom');
 const signs = [];
 fire.setExits(signs);                   // open exits keep a clear zone (kept by reference)
 let drillRunning = false;
@@ -164,6 +166,7 @@ addEventListener('keydown', (e) => {
   if (e.code === 'KeyH') fire.debugHeat = !fire.debugHeat;
   if (e.code === 'KeyF') timeScale = timeScale === 1 ? 4 : 1;
   if (e.code === 'KeyV') fire.flipbook = !fire.flipbook;
+  if (e.code === 'KeyB') bloom.enabled = !bloom.enabled;
 });
 addEventListener('keyup', (e) => { keys[e.code] = false; });
 
@@ -222,7 +225,7 @@ fire.debugHeat = new URLSearchParams(location.search).has('heat');
 
 // automation hook for screenshot tests
 window.effectsTest = {
-  addFire, addSign, startDrill, resetAll, fire, smoke, signs, buildRoom,
+  addFire, addSign, startDrill, resetAll, fire, smoke, signs, buildRoom, bloom,
   look(x, y, z, yawRad, pitchRad, crouched = false) { camera.position.set(x, y, z); yaw = yawRad; pitch = pitchRad; crouch = crouched; },
   setTimeScale(k) { timeScale = k; },
   get drillTime() { return drillTime; },
@@ -271,5 +274,5 @@ renderer.setAnimationLoop(() => {
     `Drill ${drillTime.toFixed(1)} s · total fire ${fire.totalIntensity.toFixed(2)}` +
     (status.length ? '<br>' + status.map((o) => `${o.label} ${o.burning ? '🔥' : ''}${Math.round(o.burnt * 100)}%${!o.burning && o.heat > 0.05 ? ` (heat ${Math.round(o.heat * 100)}%)` : ''}${o.protected ? ' (exit)' : ''}`).join(' · ') : '');
 
-  renderer.render(scene, camera);
+  bloom.render();
 });

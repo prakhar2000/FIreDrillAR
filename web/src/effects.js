@@ -1,4 +1,8 @@
 import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 /* =====================================================================
    FireDrill AR — effects.js   (owner: Varnika)
@@ -33,8 +37,11 @@ import * as THREE from 'three';
               Unity Labs flipbook (textures/flames.png, CC0) or, without it, a noise-shader flame
      surfaces per-face overlay: char spreading over the real surface, glowing ember cracks,
               a hot front ahead of the flames
-     embers, falling burning bits, smoke rising off the flames (≤ 400 particles, + Smoke's 240)
-     4 flickering PointLights on the biggest fires; a glow drawn through the head fog
+     embers, falling burning bits, thick black smoke rising off the flames (≤ 500 particles, + Smoke's 240)
+     4 flickering PointLights on the biggest fires (range 9 m, brightness grows with fire size), and
+              the same firelight drawn on the surface overlays so the real room glows orange in AR
+     a glow drawn through the head fog
+   createFireBloom(renderer, scene, camera) → .render(): desktop bloom (skipped in XR)
    ===================================================================== */
 
 const FIRE_SOUND_URL = '/sounds/fire.mp3';
@@ -218,12 +225,20 @@ function setBlend(mat, mode) {
   return mat;
 }
 
+// Our shaders write display (sRGB) colours straight to the screen. The desktop bloom renders into a
+// linear buffer first, so while it runs they convert to linear (rgb² ≈ sRGB → linear, cheap).
+const LINEAR_OUT = { value: 0 };
+// Strength of the firelight drawn on the surface overlays (set per frame from renderer.xr)
+const LIGHT_GAIN = { value: 1 };
+// (×0.85: overlapping flames blend in linear light there and would otherwise blow out to white under the bloom)
+const LINEAR_GLSL = 'gl_FragColor.rgb = mix(gl_FragColor.rgb, gl_FragColor.rgb * gl_FragColor.rgb * 0.85, uLinear);';
+
 // Point sprites sized in meters, correct on desktop and in each Quest eye.
 const _viewport = new THREE.Vector4();
 
 function particleMaterial(map, mode) {
   const mat = new THREE.ShaderMaterial({
-    uniforms: { uMap: { value: map }, uHalfH: { value: 500 } },
+    uniforms: { uMap: { value: map }, uHalfH: { value: 500 }, uLinear: LINEAR_OUT },
     vertexShader: /* glsl */ `
       attribute float aSize;
       attribute vec4 aColor;
@@ -237,11 +252,13 @@ function particleMaterial(map, mode) {
       }`,
     fragmentShader: /* glsl */ `
       uniform sampler2D uMap;
+      uniform float uLinear;
       varying vec4 vColor;
       void main() {
         float a = texture2D(uMap, gl_PointCoord).a * vColor.a;
         if (a < 0.004) discard;
         gl_FragColor = vec4(vColor.rgb * a, a);
+        ${LINEAR_GLSL}
       }`,
     transparent: true,
     depthWrite: false,
@@ -968,7 +985,7 @@ export class FireSim {
 // FireSystem: FireSim + everything you see and hear
 // =====================================================================
 const EMBER_N = 160;
-const SMOKE_N = 240;
+const SMOKE_N = 340;
 
 // ---------------------------------------------------------------------
 // Flame flipbook: web/public/textures/flames.png = Unity Labs "Flame03" (CC0, credited in the
@@ -995,11 +1012,13 @@ function flipbookTexture() {
   return _sheet;
 }
 
+const MAX_LIGHTS = 4;
+
 function flameMaterial() {
   const mat = new THREE.ShaderMaterial({
     uniforms: {
       uNoise: { value: noiseTexture() }, uTime: { value: 0 }, uScroll: { value: new THREE.Vector3() },
-      uSheet: { value: flipbookTexture() }, uSheetOn: { value: 0 },
+      uSheet: { value: flipbookTexture() }, uSheetOn: { value: 0 }, uLinear: LINEAR_OUT,
     },
     vertexShader: /* glsl */ `
       attribute vec2 aQuad;    // x: -1..1 across, y: 0..1 up
@@ -1041,6 +1060,7 @@ function flameMaterial() {
       uniform sampler2D uNoise;
       uniform vec3 uScroll;   // per-octave upward noise scroll, wrapped to 0–1 on the CPU (mediump-safe)
       uniform sampler2D uSheet;
+      uniform float uLinear;
       varying float vSheet;    // uSheetOn, via the vertex shader (uniform precisions must match)
       varying vec2 vUv;
       varying float vSeed;
@@ -1066,6 +1086,7 @@ function flameMaterial() {
           // same blending as the procedural flame: bright cores "over", dim edges additive
           vec3 fc = sc / max(hm, 0.001) * mix(0.75, 1.0, vBurn);
           gl_FragColor = vec4(fc * fa, fa * mix(0.1, 0.85, smoothstep(0.25, 0.75, hm)));
+          ${LINEAR_GLSL}
           return;
         }
         // noise rising through the flame
@@ -1093,6 +1114,7 @@ function flameMaterial() {
         // hot cores blend "over" (overlapping flames settle at flame colour instead of adding up
         // to white); thin, cooler edges blend additively, so they never draw dark outlines
         gl_FragColor = vec4(c * a, a * mix(0.1, 0.85, smoothstep(0.25, 0.75, heat)));
+        ${LINEAR_GLSL}
       }`,
     transparent: true,
     depthWrite: false,
@@ -1119,15 +1141,24 @@ function flameMesh(max) {
 }
 
 // Surface overlay: char, glowing embers and the hot front, from a texture with one texel per cell
-function surfaceMaterial(cells, sizeU, sizeV) {
+// plus warm flickering firelight from the biggest fires (uLights), so the floor, walls and furniture
+// around a fire light up orange even in AR, where three.js lights have no real surfaces to light
+function surfaceMaterial(cells, sizeU, sizeV, lights) {
   const mat = new THREE.ShaderMaterial({
     uniforms: {
       uCells: { value: cells }, uNoise: { value: noiseTexture() }, uFlow: { value: new THREE.Vector2() },
-      uSize: { value: new THREE.Vector2(sizeU, sizeV) }, uDebug: { value: 0 },
+      uSize: { value: new THREE.Vector2(sizeU, sizeV) }, uDebug: { value: 0 }, uLights: lights, uLinear: LINEAR_OUT,
+      uLightGain: LIGHT_GAIN,
     },
     vertexShader: /* glsl */ `
       varying vec2 vUv;
-      void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+      varying vec3 vWorld;
+      void main() {
+        vUv = uv;
+        vec4 w = modelMatrix * vec4(position, 1.0);
+        vWorld = w.xyz;
+        gl_Position = projectionMatrix * viewMatrix * w;
+      }`,
     fragmentShader: /* glsl */ `
       precision mediump float;
       uniform sampler2D uCells;   // r: char · g: flames · b: heat (unburned) · a: embers (burnt out)
@@ -1135,7 +1166,11 @@ function surfaceMaterial(cells, sizeU, sizeV) {
       uniform vec2 uFlow;         // slow drift of the glow noise, wrapped to 0–1 on the CPU
       uniform vec2 uSize;         // face size in meters
       uniform float uDebug;
+      uniform vec4 uLights[${MAX_LIGHTS}]; // xyz: light position · w: brightness (flicker included)
+      uniform float uLightGain;    // 1 in XR, low on desktop where three.js lights already light the room
+      uniform float uLinear;
       varying vec2 vUv;
+      varying vec3 vWorld;
       void main() {
         vec4 s = texture2D(uCells, vUv);
         vec2 wp = vUv * uSize;
@@ -1158,10 +1193,18 @@ function surfaceMaterial(cells, sizeU, sizeV) {
         float ember = (s.a + s.g * 0.7) * cracks * (0.5 + 0.5 * flick);
         float front = smoothstep(0.6, 0.95, s.b + (n - 0.5) * 0.3 * smoothstep(0.4, 0.6, s.b));
         vec3 emit = vec3(1.0, 0.32, 0.05) * glow * 0.5 + vec3(1.0, 0.45, 0.1) * ember * 1.2 + vec3(0.8, 0.22, 0.03) * front * 0.35;
-        float a = charA * 0.92;
-        vec3 col = vec3(0.03, 0.022, 0.016) * a + emit;
+        float a = charA * 0.95;
+        // firelight: soft falloff from each fire, absorbed by char
+        float lit = 0.0;
+        for (int k = 0; k < ${MAX_LIGHTS}; k++) {
+          vec3 d = uLights[k].xyz - vWorld;
+          lit += uLights[k].w / (1.0 + dot(d, d) * 2.5);
+        }
+        emit += vec3(1.0, 0.38, 0.09) * min(lit, 0.45) * uLightGain * (1.0 - 0.75 * charA);
+        vec3 col = vec3(0.025, 0.018, 0.013) * a + emit;
         if (a < 0.003 && emit.r < 0.003) discard;
         gl_FragColor = vec4(col, a);
+        ${LINEAR_GLSL}
       }`,
     transparent: true,
     depthWrite: false,
@@ -1172,8 +1215,6 @@ function surfaceMaterial(cells, sizeU, sizeV) {
   });
   return setBlend(mat, 'normal');
 }
-
-const MAX_LIGHTS = 4;
 
 export class FireSystem {
   /**
@@ -1193,6 +1234,8 @@ export class FireSystem {
     this._surfacesSet = false;
     this._camPos = new THREE.Vector3(0, 1.6, 0);
     this._debug = false;
+    // firelight for the surface overlays (shared by all of them)
+    this._lightU = { value: Array.from({ length: MAX_LIGHTS }, () => new THREE.Vector4(0, -50, 0, 0)) };
 
     this.group = new THREE.Group();
     this.group.name = 'FireSystem';
@@ -1210,7 +1253,10 @@ export class FireSystem {
     const on = () => { fl.mesh.material.uniforms.uSheetOn.value = this._useFlipbook ? 1 : 0; };
     if (_sheetReady) on(); else _sheetWaiters.add(on);
     this._sheetOn = on;
-    fl.mesh.onBeforeRender = (r, s, cam) => { cam.getWorldPosition(this._camPos); };
+    fl.mesh.onBeforeRender = (r, s, cam) => {
+      cam.getWorldPosition(this._camPos);
+      LIGHT_GAIN.value = r.xr.isPresenting ? 1 : 0.3;
+    };
     this.group.add(fl.mesh);
 
     // embers + falling burning bits (additive) and smoke rising off the flames
@@ -1219,14 +1265,15 @@ export class FireSystem {
     e.pts.renderOrder = 12;
     this.group.add(e.pts);
     const sm = makePoints(SMOKE_N, puffTexture(), 'normal');
-    this._sm = { ...sm, vel: new Float32Array(SMOKE_N * 3), age: new Float32Array(SMOKE_N).fill(1), life: new Float32Array(SMOKE_N).fill(1), shade: new Float32Array(SMOKE_N), acc: 0 };
+    this._sm = { ...sm, vel: new Float32Array(SMOKE_N * 3), age: new Float32Array(SMOKE_N).fill(1), life: new Float32Array(SMOKE_N).fill(1), shade: new Float32Array(SMOKE_N), base: new Float32Array(SMOKE_N), acc: 0 };
     sm.pts.renderOrder = 11;
     this.group.add(sm.pts);
 
     // lights on the biggest fires (all created up front, so shaders compile once)
     this._lights = [];
     for (let k = 0; k < MAX_LIGHTS; k++) {
-      const l = new THREE.PointLight(0xff6a1a, 0, 5, 2);
+      const l = new THREE.PointLight(0xff6a1a, 0, 9, 2); // reaches the walls and furniture around a fire
+      l.userData.base = 0;
       l.position.set(0, -50, 0);
       this.group.add(l);
       this._lights.push(l);
@@ -1289,7 +1336,8 @@ export class FireSystem {
     this._rebuildSurfaces();
     this._writeFlames();
     for (const p of [this._em, this._sm]) { p.age.fill(1); p.life.fill(1); p.geo.setDrawRange(0, 0); }
-    for (const l of this._lights) l.intensity = 0;
+    for (const l of this._lights) { l.intensity = 0; l.userData.base = 0; }
+    for (const v of this._lightU.value) v.w = 0;
   }
 
   /**
@@ -1343,7 +1391,7 @@ export class FireSystem {
       geo.setAttribute('position', new THREE.Float32BufferAttribute([o.x, o.y, o.z, a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z], 3));
       geo.setAttribute('uv', new THREE.Float32BufferAttribute([0, 0, 1, 0, 1, 1, 0, 1], 2));
       geo.setIndex([0, 1, 2, 0, 2, 3]);
-      const mat = surfaceMaterial(tex, f.lu, f.lv);
+      const mat = surfaceMaterial(tex, f.lu, f.lv, this._lightU);
       mat.uniforms.uDebug.value = this._debug ? 1 : 0;
       const mesh = new THREE.Mesh(geo, mat);
       mesh.renderOrder = 2;
@@ -1363,15 +1411,20 @@ export class FireSystem {
         const i = f.start + k;
         const st = s.state[i];
         let r = 0, g = 0, b = 0, a = 0;
-        if (st === 1) { r = 0.3 + 0.7 * (1 - s.fuel[i]); g = s.burn[i]; a = 0.4 * (1 - s.fuel[i]); }
+        // under the flames the surface chars black within ~30 s of burning
+        if (st === 1) { r = 0.45 + 0.55 * Math.min(1, (1 - s.fuel[i]) * 3); g = s.burn[i]; a = 0.4 * (1 - s.fuel[i]); }
         else if (st === 2) { r = 1; a = s.ember[i]; }
-        else if (s.heat[i] > 0.02) { b = Math.min(1, s.heat[i]); r = Math.max(0, s.heat[i] - 0.5) * 0.4; }
+        // heated but not burning: soot-stained and browning before it catches
+        else if (s.heat[i] > 0.02) { b = Math.min(1, s.heat[i]); r = Math.max(0, s.heat[i] - 0.35) * 0.6; }
         if (r || g || b || a) any = true;
         d[k * 4] = r * 255; d[k * 4 + 1] = g * 255; d[k * 4 + 2] = b * 255; d[k * 4 + 3] = a * 255;
       }
       if (any || o.active || force) o.tex.needsUpdate = true;
       o.active = any;
-      o.mesh.visible = any;
+      // also drawn when a fire is close enough to light it
+      let lit = false;
+      for (const h of s.hotspots) if (f.bb.distanceToPoint(h.position) < 4.5) { lit = true; break; }
+      o.mesh.visible = any || lit;
     }
   }
 
@@ -1526,7 +1579,7 @@ export class FireSystem {
   _updateSmoke(dt) {
     const s = this.sim, sm = this._sm, t = this.time;
     const ceil = s.ceilingY;
-    sm.acc += dt * Math.min(40, s.burning.length ? 3 + 14 * s.totalIntensity : 0);
+    sm.acc += dt * Math.min(70, s.burning.length ? 6 + 22 * s.totalIntensity : 0);
     let alive = 0;
     const P = sm.pos, C = sm.col, Z = sm.size, Vv = sm.vel;
     for (let k = 0; k < SMOKE_N; k++) {
@@ -1536,14 +1589,16 @@ export class FireSystem {
         sm.acc -= 1;
         const fh = MATS[s.mat[i]].flameH * (0.3 + 0.7 * s.burn[i]);
         P[k * 3] = s.x[i] + (Math.random() - 0.5) * 0.2;
-        P[k * 3 + 1] = Math.min(ceil - 0.2, s.y[i] + fh * 1.05); // from the flame tips, not inside them
+        // starts among the flame tips, so the flames fade up into it
+        P[k * 3 + 1] = Math.min(ceil - 0.2, s.y[i] + fh * (0.7 + 0.3 * Math.random()));
         P[k * 3 + 2] = s.z[i] + (Math.random() - 0.5) * 0.2;
-        Vv[k * 3] = (Math.random() - 0.5) * 0.12;
-        Vv[k * 3 + 1] = 0.45 + Math.random() * 0.35;
-        Vv[k * 3 + 2] = (Math.random() - 0.5) * 0.12;
+        Vv[k * 3] = (Math.random() - 0.5) * 0.1;
+        Vv[k * 3 + 1] = 0.5 + Math.random() * 0.4;
+        Vv[k * 3 + 2] = (Math.random() - 0.5) * 0.1;
         sm.age[k] = 0;
-        sm.life[k] = 4 + Math.random() * 2.5;
-        sm.shade[k] = 0.09 + Math.random() * 0.1;
+        sm.life[k] = 5 + Math.random() * 3;
+        sm.shade[k] = 0.02 + Math.random() * 0.04; // near-black soot
+        sm.base[k] = 0.3 + 0.35 * fh;
       }
       if (sm.age[k] >= sm.life[k]) { C[k * 4 + 3] = 0; continue; }
       alive = k + 1;
@@ -1556,10 +1611,11 @@ export class FireSystem {
       P[k * 3] += (Vv[k * 3] * spread + Math.sin(t * 0.7 + k) * 0.05) * dt;
       P[k * 3 + 1] += up * dt;
       P[k * 3 + 2] += (Vv[k * 3 + 2] * spread + Math.cos(t * 0.6 + k) * 0.05) * dt;
-      const v = sm.shade[k];
-      C[k * 4] = v; C[k * 4 + 1] = v * 0.97; C[k * 4 + 2] = v * 0.95;
-      C[k * 4 + 3] = clamp01((a - 0.04) * 4) * (1 - a) * 0.55;
-      Z[k] = 0.25 + 1.2 * a;
+      // lit orange-brown from below at first (dark grey over flames would read olive), then black
+      const v = sm.shade[k], warm = 1 - clamp01(a * 5);
+      C[k * 4] = v + 0.16 * warm; C[k * 4 + 1] = v + 0.06 * warm; C[k * 4 + 2] = v + 0.015 * warm;
+      C[k * 4 + 3] = clamp01((a - 0.02) * 6) * Math.pow(Math.max(0, 1 - a), 0.7) * 0.8; // a can pass 1 for a frame: no NaN (it would black out the bloom)
+      Z[k] = sm.base[k] + 1.4 * Math.sqrt(a);
     }
     if (sm.acc > 1) sm.acc = 1;
     sm.geo.setDrawRange(0, alive);
@@ -1585,12 +1641,19 @@ export class FireSystem {
     const k = Math.min(1, dt * 3);
     this._lights.forEach((l, i) => {
       const h = spots[i];
-      const want = h ? 3.2 * h.intensity * flicker(t, i * 13.7) : 0;
+      // brightness grows with the burning area; the flicker rides on top unsmoothed
+      const want = h ? Math.min(18, 2 + 9 * Math.sqrt(h.area)) : 0;
       if (h) {
-        if (l.intensity < 0.01) l.position.set(h.position.x, h.position.y + 0.4, h.position.z);
-        else l.position.lerp(_tmp.set(h.position.x, h.position.y + 0.4, h.position.z), k);
+        const y = h.position.y + 0.3 + 0.25 * Math.sqrt(h.area);
+        if (l.userData.base < 0.01) l.position.set(h.position.x, y, h.position.z);
+        else l.position.lerp(_tmp.set(h.position.x, y, h.position.z), k);
       }
-      l.intensity += (want - l.intensity) * k;
+      l.userData.base += (want - l.userData.base) * k;
+      const fl = flicker(t * 1.7, i * 13.7) * (0.92 + 0.08 * Math.sin(t * 31 + i * 5));
+      l.intensity = l.userData.base * fl;
+      l.color.setRGB(1, 0.36 + 0.06 * fl, 0.08); // a touch yellower on the bright flickers
+      // same light for the surface overlays (normalised; 0 when there's no fire)
+      this._lightU.value[i].set(l.position.x, l.position.y, l.position.z, l.intensity / 30);
     });
     for (let i = 0; i < MAX_SPOTS; i++) {
       const h = spots[i], halo = this._halos[i], fg = this._fogGlows[i];
@@ -1659,6 +1722,42 @@ export class FireSystem {
   }
 }
 const _tmp = new THREE.Vector3();
+
+// ---------------------------------------------------------------------
+// Desktop bloom: flames glow and bleed light like fire on a camera.
+//   const bloom = createFireBloom(renderer, scene, camera);
+//   … then each frame call bloom.render() instead of renderer.render(scene, camera).
+// In XR it renders straight to the headset (no bloom: too costly per eye on the Quest).
+// It follows window resizes; call bloom.setSize(w, h) if your canvas isn't the window.
+// ---------------------------------------------------------------------
+export function createFireBloom(renderer, scene, camera, { strength = 0.55, radius = 0.45, threshold = 0.7 } = {}) {
+  const size = renderer.getSize(new THREE.Vector2());
+  const composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+  const bloom = new UnrealBloomPass(size.clone(), strength, radius, threshold);
+  composer.addPass(bloom);
+  composer.addPass(new OutputPass());
+  const setSize = (w, h) => { composer.setPixelRatio(renderer.getPixelRatio()); composer.setSize(w, h); };
+  setSize(size.x, size.y);
+  const onResize = () => { renderer.getSize(size); setSize(size.x, size.y); };
+  if (typeof addEventListener === 'function') addEventListener('resize', onResize);
+  return {
+    composer,
+    bloom,
+    enabled: true,
+    setSize,
+    render() {
+      if (renderer.xr.isPresenting || !this.enabled) { renderer.render(scene, camera); return; }
+      LINEAR_OUT.value = 1;
+      composer.render();
+      LINEAR_OUT.value = 0;
+    },
+    dispose() {
+      if (typeof removeEventListener === 'function') removeEventListener('resize', onResize);
+      composer.dispose();
+    },
+  };
+}
 
 // ---------------------------------------------------------------------
 // The shared FireSystem behind `new Fire(pos)`. Loads /api/room for fuel unless
