@@ -100,6 +100,18 @@ An instructor builds a fire drill inside a real room in AR, using their voice an
 
 Only Prakhar needs the Quest and only Devaj needs DataFeel. Everyone else builds and tests in Chrome on their own laptop. Each person owns separate files, so merges don't collide.
 
+### Mac vs Windows
+
+**Mac:** Prakhar, Varnika, Emma · **Windows:** Eileen, Devaj
+
+The ones that can actually break the demo:
+1. **Devaj's server unreachable.** Prakhar's Vite proxies `/py` to Devaj's laptop on port 8000. Windows marks a phone hotspot as *Public* and the firewall blocks it. Devaj: Settings → Network → hotspot → **Private**, and allow Python on Private networks. Test with `https://<prakhar-ip>:5173/py/health`.
+2. **Getting the AR clip off the Quest (Prakhar, Mac).** macOS can't browse the headset like a drive. Install **Meta Quest Developer Hub** (or `adb`) *before* the Quest slot.
+3. **DataFeel SDK.** It's Unity/.NET, so it most likely works best on Windows. Keep the server and driver on Devaj's Windows laptop. Read the El Jefe's port from config (`COM3` on Windows vs `/dev/tty.usbmodem…` on Mac), never hard-code it.
+4. **Line endings.** `.gitattributes` forces LF for everyone, so Windows commits don't show whole-file diffs or conflicts. Don't remove it.
+
+**Full list (git, npm, Python, network, Quest, browser code, demo-day laptop prep): see "Mac vs Windows: full reference" in [AGENTS.md](AGENTS.md).**
+
 ---
 
 ## 6. Setup from scratch
@@ -156,7 +168,8 @@ firedrill/
   data/                     room.json and drill logs (commit room.json so everyone gets it)
   pitch/                    (Emma)    script, slides, video
   README.md                 this handbook
-  CLAUDE.md                 shared Claude instructions (CLAUDE.local.md = personal, gitignored)
+  AGENTS.md                 shared agent instructions (all agents read this)
+  CLAUDE.md                 just imports AGENTS.md for Claude Code (CLAUDE.local.md = personal, gitignored)
 ```
 
 **`web/vite.config.js`** (replace the generated one). It serves over HTTPS, lets the Quest reach the laptop, saves `room.json` and drill logs into `data/`, and forwards `/py/...` to Devaj's Python server:
@@ -247,8 +260,9 @@ Open the `https://localhost:5173` link Vite prints, and click past the certifica
 cd firedrill/server
 python3 -m venv .venv && source .venv/bin/activate     # Windows: py -m venv .venv ; .venv\Scripts\activate
 pip install fastapi "uvicorn[standard]" httpx python-dotenv
-pip freeze > requirements.txt
 ```
+
+Write `server/requirements.txt` by hand with those four lines (`fastapi`, `uvicorn[standard]`, `httpx`, `python-dotenv`). Don't use `pip freeze`; see "Mac vs Windows" in section 5.
 
 `server/.env` (never commit this):
 ```
@@ -368,6 +382,7 @@ Everyone codes against these, so pieces plug together at merge time.
 
 ### Prakhar — XR lead + host
 - **Scaffold** (Vite HTTPS app, placeholder modules, `server/app.py`): ✅ done
+- **Exported scan preview** (`10_17_2026 (1)/*.obj` in the browser): ✅ loads. Mesh is about 7.6 × 1.8 × 13.8 m.
 1. **Hello AR.** three.js scene + `ARButton` with `requiredFeatures: ['local-floor']` and `optionalFeatures: ['hand-tracking', 'plane-detection', 'mesh-detection']`. Set `renderer.xr.setReferenceSpaceType('local-floor')` and a transparent background.
    *Done when:* a cube floats in your real room.
 2. **Room reader (`room.js`).** Each frame, loop over `frame.detectedPlanes` and `frame.detectedMeshes`:
