@@ -142,11 +142,10 @@ firedrill/
     index.html
     vite.config.js          (Prakhar)
     public/sounds/          (Emma: fire.mp3, alarm.mp3)
-    public/textures/        (Varnika: fire.mp4, video used for the flames; credit Pixabay)
     src/
       main.js               (Prakhar) app loop, AR session, pinches, scenario functions
       room.js               (Prakhar) room scan → surfaces, save/load room.json
-      effects.js            (Varnika) Fire, Smoke, ExitSign
+      effects.js            (Varnika) FireSystem (+ Fire), Smoke, ExitSign
       desktop.js            (Eileen)  WASD walk, crouch, load room.json
       drill.js              (Eileen)  drill timer, escape checks, review
       voice.js              (Emma)    AssemblyAI streaming + command parser
@@ -340,8 +339,11 @@ Everyone codes against these, so pieces plug together at merge time.
 `addFire(pos)` · `addExit(pos, blocked)` · `startDrill()` · `stopDrill(reason)` · `resetDrill()` · `clearAll()`
 
 **Effects** (Varnika, `effects.js`):
-- `new Fire(position)` → `.group` (add to scene), `.update(dt, growing)`, `.intensity`, `.startSound()`, `.stopSound()`
-- `new Smoke(scene, camera)` → `.start(ceilingY)`, `.update(dt, headY, fires)` returns smoke depth 0–1, `.stop()`
+- `new FireSystem(scene, { surfaces })` → one fire simulation for the whole room (recommended). `surfaces` = `room.json` surfaces; tables, couches etc., the floor and the walls become fuel.
+  - `.ignite(pos)` start a fire (snaps to the nearest fuel) · `.update(dt, { running })` (running = drill on: spreads, grows, burns out) · `.setExits(exitSigns)` (open exits keep a 1.5 m fire-free zone)
+  - `.hotspots` → up to 8 `{ position, intensity 0–1 }` (use for heat direction) · `.totalIntensity` · `.reset()` · `.startSound()` / `.stopSound()` · `.setSurfaces(surfaces)` · `.speed` (1 = demo pace)
+- `new Fire(position)` still works: it lights a shared FireSystem (`fireSystem()`), which loads `/api/room` for fuel unless you call `fireSystem().setSurfaces(surfaces)`. `.group` (add to scene), `.update(dt, growing)`, `.intensity` (fire size around that spot), `.startSound()`, `.stopSound()`
+- `new Smoke(scene, camera)` → `.start(ceilingY)`, `.update(dt, headY, fires)` returns smoke depth 0–1 (`fires` = the FireSystem or the Fire list), `.stop()`
 - `new ExitSign(position, blocked)` → `.sprite`, `.position`, `.setBlocked(bool)`
 
 **Drill** (Eileen, `drill.js`):
@@ -380,8 +382,7 @@ Everyone codes against these, so pieces plug together at merge time.
 5. **Record an AR clip** before the Quest goes back (Quest: Camera → Record video). Try to rebook the Quest near judging for a clean final recording.
 
 ### Varnika — Effects (`effects.js`)
-- **Fire, smoke, head fog, signs, spread:** ✅ done in test page (`/effects-test.html`) · **Visual polish:** ✅ done (readable signs at 3 m, visible smoke ceiling reaching 1.6 m in 15–18 s, fire under a 2,000-particle / 4-light budget) · **Realistic fire:** ✅ done (noise-shader flames, embers, scorch marks, breathing light, glow through smoke) · **Fire behaviour:** ✅ done (heat-based spread with smoldering, fires grow and creep across furniture, smoke follows total fire size, open exits stay clear; heat bars: H or `?heat=1`) · **Fire video:** ✅ done (real flame footage on each fire, procedural fallback) · next: 🚧 test in the Quest
-- **Credit (for the submission form):** the flame footage in `web/public/textures/fire.mp4` is from **Pixabay** (video #19463, `https://cdn.pixabay.com/video/2018/11/21/19463-302196108.mp4`). Emma: list it under credits / third-party assets.
+- **Fire, smoke, head fog, signs, spread:** ✅ done in test page (`/effects-test.html`) · **Visual polish:** ✅ done (readable signs at 3 m, visible smoke ceiling reaching 1.6 m in 15–18 s, fire under a 2,000-particle / 4-light budget) · **Realistic fire:** ✅ done (noise-shader flames, embers, scorch marks, breathing light, glow through smoke) · **Fire redesign:** ✅ done: `FireSystem` burns the room's surfaces cell by cell (tabletops, furniture sides, floor, walls). Fire grows, creeps across surfaces, climbs walls, drops burning bits on the floor, catches nearby furniture by radiant heat, then chars and glows out. Demo pace in the test room: table fully alight ~20 s, floor ~25 s, couch ~38 s, walls ~85 s. Procedural flames (no video any more), char and ember overlays on the surfaces, smoke rising off the flames, fire glow on the smoke ceiling. Test page: H = heat view, F = 4× time · next: 🚧 test in the Quest (lower `maxFlames` if it drops frames)
 1. **Fire:** about 80–100 particles with a soft round texture and additive blending. Colour runs yellow → orange → dark red as they rise; add a flickering orange `PointLight`. `intensity` grows slowly during the drill.
 2. **Smoke layer:** a few stacked gray translucent planes starting at the ceiling height and dropping slowly to about 1.1 m, faster with more fires. Add gray smoke puffs rising from each fire.
 3. **Head fog:** a gray sphere (BackSide, depthTest off) attached to the camera, with opacity rising as the head goes above the smoke layer. `update()` returns how deep the head is in smoke (0–1).

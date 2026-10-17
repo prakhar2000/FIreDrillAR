@@ -3,7 +3,7 @@
 // Quest: tap "START AR", pinch: right hand = fire, left hand = exit / blocked sign.
 import * as THREE from 'three';
 import { ARButton } from 'three/addons/webxr/ARButton.js';
-import { Fire, Smoke, ExitSign, FireSpread } from './effects.js';
+import { FireSystem, Smoke, ExitSign } from './effects.js';
 
 let CEILING = 2.6;
 
@@ -59,12 +59,13 @@ const FAKE_ROOM = {
     { kind: 'plane', label: 'wall', matrix: T(4, 0, 0), polygon: [[0, 0, -4], [0, 0, 4], [0, 2.6, 4], [0, 2.6, -4]] },
     { kind: 'plane', label: 'table', matrix: T(0, 0.75, -1.5), polygon: rect(1.2, 0.7) },
     { kind: 'mesh', label: 'couch', matrix: T(2.3, 0, -1.4), vertices: boxVerts(1.8, 0.45, 0.8), indices: [] },
-    { kind: 'plane', label: 'desk', matrix: T(-2.3, 0.75, -2.2), polygon: rect(1.0, 0.6) },
+    { kind: 'plane', label: 'desk', matrix: T(-2.3, 0.75, -3.65), polygon: rect(1.0, 0.6) }, // against the back wall
     { kind: 'plane', label: 'door', matrix: T(-3.95, 0, 1.0), polygon: [[0, 0, -0.45], [0, 2, -0.45], [0, 2, 0.45], [0, 0, 0.45]] },
     { kind: 'plane', label: 'door', matrix: T(3.95, 0, 1.5), polygon: [[0, 0, -0.45], [0, 2, -0.45], [0, 2, 0.45], [0, 0, 0.45]] },
   ],
 };
 
+let roomData = null; // last room drawn (fake or data/room.json)
 const COLORS = { floor: 0x57534e, table: 0x8b5a2b, couch: 0x3f5f8a, desk: 0x6b4423, door: 0x2e7d32, wall: 0x78716c };
 
 // Draw any room.json surface as a solid box around its points (good enough to click on)
@@ -101,22 +102,22 @@ function buildRoom(data) {
     room.add(mesh);
     solids.push(mesh);
   }
-  spread.setSurfaces(data.surfaces || []);
+  roomData = data;
+  if (!renderer.xr.isPresenting) fire.setSurfaces(data.surfaces || []);
 }
 
 // ---------- effects ----------
 const smoke = new Smoke(scene, camera); // adds itself + head fog + audio listener
-const fires = [];
+const fire = new FireSystem(scene);     // the whole room's fire: fuel comes from buildRoom()
 const signs = [];
+fire.setExits(signs);                   // open exits keep a clear zone (kept by reference)
 let drillRunning = false;
 let drillTime = 0;
+let timeScale = 1;
 
 function addFire(pos) {
-  const f = new Fire(pos);
-  scene.add(f.group);
-  fires.push(f);
-  if (drillRunning) f.startSound();
-  return f;
+  fire.ignite(pos);
+  if (drillRunning) fire.startSound();
 }
 function addSign(pos, blocked) {
   const s = new ExitSign(pos, blocked);
@@ -124,25 +125,22 @@ function addSign(pos, blocked) {
   signs.push(s);
 }
 function startDrill() {
-  if (!fires.length) { log('Place a fire first (key 1, then click).'); return; }
+  if (!fire.sim.burning.length) { log('Place a fire first (key 1, then click).'); return; }
   drillRunning = true;
   drillTime = 0;
   smoke.start(CEILING);
-  fires.forEach((f) => f.startSound());
+  fire.startSound();
   log('Drill running: crouch with C to stay under the smoke.');
 }
 function resetAll() {
   drillRunning = false;
-  fires.splice(0).forEach((f) => f.dispose());
+  drillTime = 0;
+  fire.stopSound();
+  fire.reset();
   signs.splice(0).forEach((s) => s.dispose());
   smoke.reset();
-  spread.reset();
   log('');
 }
-
-const spread = new FireSpread({
-  onSpread: (pos, surface) => { addFire(pos); log(`Fire spread to the ${surface.label}!`); },
-});
 
 buildRoom(FAKE_ROOM);
 fetch('/api/room')
@@ -163,7 +161,8 @@ addEventListener('keydown', (e) => {
   if (e.code === 'KeyC') crouch = !crouch;
   if (e.code === 'Space') { e.preventDefault(); startDrill(); }
   if (e.code === 'KeyR') resetAll();
-  if (e.code === 'KeyH') showHeat = !showHeat;
+  if (e.code === 'KeyH') fire.debugHeat = !fire.debugHeat;
+  if (e.code === 'KeyF') timeScale = timeScale === 1 ? 4 : 1;
 });
 addEventListener('keyup', (e) => { keys[e.code] = false; });
 
@@ -189,13 +188,16 @@ function place(e) {
 }
 
 // ---------- AR ----------
+// the desktop room isn't the real room: in AR, fires burn a small patch where you pinch
 renderer.xr.addEventListener('sessionstart', () => {
   room.visible = false;
   renderer.setClearColor(0x000000, 0);
+  fire.setSurfaces([]);
 });
 renderer.xr.addEventListener('sessionend', () => {
   room.visible = true;
   renderer.setClearColor(0x15171c, 1);
+  fire.setSurfaces(roomData.surfaces || []);
 });
 const _fwd = new THREE.Vector3();
 for (let i = 0; i < 2; i++) {
@@ -208,54 +210,20 @@ for (let i = 0; i < 2; i++) {
     const p = xrCam.position.clone().addScaledVector(_fwd, 1.2);
     if (ctrl.userData.hand === 'left') addSign(p, signs.length % 2 === 1);
     else {
-      addFire(p.setY(0.75));
+      addFire(p.setY(0.75)); // no room scan here: burns a small patch in the air at table height
       if (!drillRunning) startDrill();
     }
   });
 }
 
-// ---------- heat debug (H, or ?heat=1): a bar over each furniture surface ----------
-// gray = protected by an open exit · green → yellow (smoldering from 60%) → red · orange = burning
-let showHeat = new URLSearchParams(location.search).has('heat');
-const heatBars = new THREE.Group();
-scene.add(heatBars);
-let heatBarsFor = null;
-const BAR_H = 0.5;
-const barMat = (color) => new THREE.SpriteMaterial({ color, depthTest: false, depthWrite: false, transparent: true, toneMapped: false });
-const heatCol = new THREE.Color();
-function updateHeatBars() {
-  heatBars.visible = showHeat;
-  if (!showHeat) return;
-  if (heatBarsFor !== spread.targets) {
-    heatBarsFor = spread.targets;
-    heatBars.children.slice().forEach((c) => { c.material.dispose(); heatBars.remove(c); });
-    for (const t of spread.targets) {
-      const x = t.top.x, y = t.top.y + 0.35, z = t.top.z;
-      const bg = new THREE.Sprite(barMat(0x111111)); bg.center.set(0.5, 0); bg.scale.set(0.09, BAR_H, 1);
-      const fill = new THREE.Sprite(barMat(0x22c55e)); fill.center.set(0.5, 0); fill.scale.set(0.06, 0.001, 1);
-      const mark = new THREE.Sprite(barMat(0xffffff)); mark.scale.set(0.12, 0.008, 1); // 60 %: smolder line
-      bg.position.set(x, y, z); fill.position.set(x, y, z); mark.position.set(x, y + BAR_H * 0.6, z);
-      bg.renderOrder = 1001; fill.renderOrder = 1002; mark.renderOrder = 1003;
-      fill.userData.target = t;
-      heatBars.add(bg, fill, mark);
-    }
-  }
-  for (const c of heatBars.children) {
-    const t = c.userData.target;
-    if (!t) continue;
-    const h = t.burning ? 1 : Math.min(1, t.heat);
-    c.scale.y = Math.max(0.001, BAR_H * h);
-    if (t.burning) heatCol.setHex(0xff7a1a);
-    else if (t.protected) heatCol.setHex(0x9ca3af);
-    else heatCol.setRGB(Math.min(1, h * 2), Math.min(1, 2 - h * 2) * 0.9, 0.1);
-    c.material.color.copy(heatCol);
-  }
-}
+// heat view (H, or ?heat=1): surfaces turn green → red as they heat up, orange where burning
+fire.debugHeat = new URLSearchParams(location.search).has('heat');
 
 // automation hook for screenshot tests
 window.effectsTest = {
-  addFire, addSign, startDrill, resetAll, spread, smoke, fires, signs,
+  addFire, addSign, startDrill, resetAll, fire, smoke, signs, buildRoom,
   look(x, y, z, yawRad, pitchRad, crouched = false) { camera.position.set(x, y, z); yaw = yawRad; pitch = pitchRad; crouch = crouched; },
+  setTimeScale(k) { timeScale = k; },
   get drillTime() { return drillTime; },
 };
 
@@ -288,18 +256,19 @@ renderer.setAnimationLoop(() => {
   }
 
   const headY = inXR ? renderer.xr.getCamera().position.y : camera.position.y;
-  for (const f of fires) f.update(dt, drillRunning);
-  const depth = smoke.update(dt, headY, fires);
+  const sdt = dt * timeScale;
+  fire.update(sdt, { running: drillRunning });
+  const depth = smoke.update(sdt, headY, fire);
   for (const s of signs) s.update(dt);
-  if (drillRunning) { drillTime += dt; spread.update(dt, fires, signs); }
-  updateHeatBars();
+  if (drillRunning) drillTime += sdt;
 
+  const status = fire.sim.objectStatus().filter((o) => o.burnt > 0 || o.heat > 0.05);
   statsEl.innerHTML =
-    `Tool: <b>${tool}</b> · ${Math.round(fps)} FPS<br>` +
-    `Head ${headY.toFixed(2)} m${crouch ? ' (crouched)' : ''} · fires ${fires.length}<br>` +
+    `Tool: <b>${tool}</b> · ${Math.round(fps)} FPS${timeScale !== 1 ? ` · <b>${timeScale}× time</b>` : ''}<br>` +
+    `Head ${headY.toFixed(2)} m${crouch ? ' (crouched)' : ''} · burning cells ${fire.sim.burning.length} · flames ${fire._flames.geo.instanceCount}<br>` +
     `Smoke bottom ${smoke.group.visible ? smoke.bottom.toFixed(2) + ' m' : 'off'} · depth <b>${depth.toFixed(2)}</b><br>` +
-    `Drill ${drillTime.toFixed(1)} s · total fire ${smoke.totalIntensity.toFixed(2)}` +
-    (showHeat ? '<br>' + spread.targets.map((t) => `${t.label} ${t.burning ? '🔥' : Math.round(t.heat * 100) + '%'}${t.protected ? ' (exit)' : ''}`).join(' · ') : '');
+    `Drill ${drillTime.toFixed(1)} s · total fire ${fire.totalIntensity.toFixed(2)}` +
+    (status.length ? '<br>' + status.map((o) => `${o.label} ${o.burning ? '🔥' : ''}${Math.round(o.burnt * 100)}%${!o.burning && o.heat > 0.05 ? ` (heat ${Math.round(o.heat * 100)}%)` : ''}${o.protected ? ' (exit)' : ''}`).join(' · ') : '');
 
   renderer.render(scene, camera);
 });
