@@ -17,8 +17,10 @@ import * as THREE from 'three';
      setAudioListener(camera)   (Smoke does this for you)
 
    Built for Quest passthrough: premultiplied-alpha blending so fire stays bright
-   over the real room. Cheap: all fires share a 1,700-particle budget (Smoke adds 240),
-   and only the first 4 fires get a PointLight, so dozens of fires stay under 2,000 particles.
+   over the real room. Each flame is a mediump noise shader on 3 quads (one draw call);
+   only embers and smoke puffs are particles. All fires share a 1,700-particle budget
+   (Smoke adds 240, so < 2,000) and only the first 4 fires get a PointLight.
+   When the head is in smoke, a dim glow pass drawn after the head fog keeps fires visible.
    ===================================================================== */
 
 const FIRE_SOUND_URL = '/sounds/fire.mp3';
@@ -52,6 +54,21 @@ function glowTexture() {
   }));
 }
 
+// Wide gaussian-like falloff (no visible disc edge) for halos and the through-smoke glow
+let _softGlowTex = null;
+function softGlowTexture() {
+  return (_softGlowTex ??= canvasTexture(128, 128, (g, s) => {
+    const gr = g.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+    gr.addColorStop(0, 'rgba(255,255,255,1)');
+    gr.addColorStop(0.2, 'rgba(255,255,255,0.6)');
+    gr.addColorStop(0.45, 'rgba(255,255,255,0.22)');
+    gr.addColorStop(0.7, 'rgba(255,255,255,0.06)');
+    gr.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = gr;
+    g.fillRect(0, 0, s, s);
+  }));
+}
+
 function puffTexture() {
   return (_puffTex ??= canvasTexture(128, 128, (g, s) => {
     for (let i = 0; i < 16; i++) {
@@ -65,6 +82,66 @@ function puffTexture() {
       g.fillRect(0, 0, s, s);
     }
   }));
+}
+
+// Smooth tiling value noise for the flame shader. Sampling a texture (instead of hashing in
+// the shader) stays clean at mediump on the Quest and costs one fetch per octave.
+let _noiseTex = null;
+function noiseTexture() {
+  if (_noiseTex) return _noiseTex;
+  const N = 64;
+  let a = new Float32Array(N * N).map(() => Math.random());
+  for (let pass = 0; pass < 2; pass++) { // wrap-around 3x3 blur, twice: soft, blob-like noise
+    const b = new Float32Array(N * N);
+    for (let y = 0; y < N; y++) {
+      for (let x = 0; x < N; x++) {
+        let s = 0;
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) s += a[((y + dy + N) % N) * N + ((x + dx + N) % N)];
+        b[y * N + x] = s / 9;
+      }
+    }
+    a = b;
+  }
+  let lo = 1, hi = 0;
+  for (const v of a) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+  const data = new Uint8Array(N * N * 4);
+  for (let i = 0; i < N * N; i++) {
+    const v = Math.round(((a[i] - lo) / (hi - lo)) * 255); // stretch back to the full 0–1 range
+    data[i * 4] = data[i * 4 + 1] = data[i * 4 + 2] = v;
+    data[i * 4 + 3] = 255;
+  }
+  _noiseTex = new THREE.DataTexture(data, N, N, THREE.RGBAFormat);
+  _noiseTex.wrapS = _noiseTex.wrapT = THREE.RepeatWrapping;
+  _noiseTex.magFilter = _noiseTex.minFilter = THREE.LinearFilter;
+  _noiseTex.generateMipmaps = false;
+  _noiseTex.needsUpdate = true;
+  return _noiseTex;
+}
+
+// Charred scorch decal: near-black brown center, blotchy soft edge
+let _scorchTex = null;
+function scorchTexture() {
+  return (_scorchTex ??= canvasTexture(128, 128, (g, s) => {
+    const c = s / 2;
+    let gr = g.createRadialGradient(c, c, 0, c, c, c);
+    gr.addColorStop(0, 'rgba(8,5,3,0.92)');
+    gr.addColorStop(0.45, 'rgba(18,11,6,0.7)');
+    gr.addColorStop(0.8, 'rgba(30,20,12,0.25)');
+    gr.addColorStop(1, 'rgba(30,20,12,0)');
+    g.fillStyle = gr;
+    g.fillRect(0, 0, s, s);
+    for (let i = 0; i < 14; i++) { // irregular edge
+      const a = Math.random() * Math.PI * 2;
+      const d = s * (0.08 + Math.random() * 0.22);
+      const x = c + Math.cos(a) * d, y = c + Math.sin(a) * d;
+      const r = s * (0.08 + Math.random() * 0.12);
+      gr = g.createRadialGradient(x, y, 0, x, y, r);
+      gr.addColorStop(0, 'rgba(12,8,5,0.35)');
+      gr.addColorStop(1, 'rgba(12,8,5,0)');
+      g.fillStyle = gr;
+      g.fillRect(0, 0, s, s);
+    }
+  }, true));
 }
 
 // Seamless, dense cloud tile for the smoke layers (blobs wrap around the edges)
@@ -247,13 +324,16 @@ function loadFireBuffer() {
 }
 
 // ---------------------------------------------------------------------
-// Fire
+// Fire: procedural noise-shader flame on 3 quads, plus a few embers and smoke puffs
 // ---------------------------------------------------------------------
-const FLAME_N = 100;
+const EMBER_N = 16;
 const PUFF_N = 32;
+const FLAME_W = 0.8;  // quad size in meters at scale 1, with room for tongues to wander
+const FLAME_H = 1.4;
+const FLAME_NOMINAL_H = 1.1; // flame height at full intensity (tips can lick higher)
 
-// All fires share one particle budget (+ Smoke's 240 puffs keeps the scene under 2,000).
-// With many fires each draws fewer, brighter particles instead of the frame rate collapsing.
+// Embers and puffs of all fires share one particle budget (+ Smoke's 240 puffs stays under 2,000).
+// The flames themselves are 3 quads per fire, not particles.
 const FIRE_BUDGET = 1700;
 // Every PointLight adds cost to every lit pixel, so only the first few fires get one.
 const MAX_FIRE_LIGHTS = 4;
@@ -263,6 +343,8 @@ let _countAcc = 0;
 let _budgetCheckedAt = -Infinity;
 let _lightsUsed = 0;
 const _countIfInScene = (f) => { if (f.group.parent) _countAcc++; };
+// How far the viewer's head is in smoke (0–1). Smoke.update() writes it; fires use it to glow through the fog.
+let _headFog = 0;
 
 function sceneFireCount() {
   const now = performance.now();
@@ -273,6 +355,144 @@ function sceneFireCount() {
     _sceneFires = Math.max(1, _countAcc);
   }
   return _sceneFires;
+}
+
+// Smooth "breathing" flicker around 1 (about 0.6–1.4): several sines, no Math.random
+function flicker(t, seed) {
+  return 1
+    + 0.14 * Math.sin(t * 7.3 + seed)
+    + 0.09 * Math.sin(t * 12.9 + seed * 2.1)
+    + 0.05 * Math.sin(t * 23.7 + seed * 3.7)
+    + 0.1 * Math.sin(t * 1.9 + seed * 0.7);
+}
+
+// 3 vertical quads: one Y-axis billboard and two crossed planes (at 0° and 90°) for volume
+function flameGeometry() {
+  const quads = [[0, 0, 0.0], [1, 0, 0.37], [1, Math.PI / 2, 0.71]]; // kind, angle, noise seed
+  const quad = new Float32Array(quads.length * 8);
+  const kind = new Float32Array(quads.length * 4);
+  const angle = new Float32Array(quads.length * 4);
+  const seed = new Float32Array(quads.length * 4);
+  const pos = new Float32Array(quads.length * 12);
+  const index = [];
+  quads.forEach(([k, a, s], q) => {
+    [[-1, 0], [1, 0], [1, 1], [-1, 1]].forEach(([x, y], v) => {
+      const i = q * 4 + v;
+      quad[i * 2] = x; quad[i * 2 + 1] = y;
+      kind[i] = k; angle[i] = a; seed[i] = s;
+      pos[i * 3] = x * FLAME_W * 0.5; pos[i * 3 + 1] = y * FLAME_H; // only for bounds
+    });
+    index.push(q * 4, q * 4 + 1, q * 4 + 2, q * 4, q * 4 + 2, q * 4 + 3);
+  });
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('aQuad', new THREE.BufferAttribute(quad, 2));
+  geo.setAttribute('aKind', new THREE.BufferAttribute(kind, 1));
+  geo.setAttribute('aAngle', new THREE.BufferAttribute(angle, 1));
+  geo.setAttribute('aSeed', new THREE.BufferAttribute(seed, 1));
+  geo.setIndex(index);
+  return geo;
+}
+
+function flameMaterial(scale) {
+  const mat = new THREE.ShaderMaterial({
+    uniforms: {
+      uNoise: { value: noiseTexture() },
+      uSize: { value: new THREE.Vector2(FLAME_W * scale, FLAME_H * scale) },
+      uScroll: { value: new THREE.Vector4() },
+      uHeight: { value: 0.7 },
+      uBright: { value: 1 },
+      uSeed: { value: Math.random() },
+    },
+    vertexShader: /* glsl */ `
+      attribute vec2 aQuad;   // x: -1..1 across, y: 0..1 up
+      attribute float aKind;  // 0 = billboard around Y, 1 = fixed crossed plane
+      attribute float aAngle;
+      attribute float aSeed;
+      uniform vec2 uSize;
+      varying vec2 vUv;
+      varying float vFade;
+      varying float vSeed;
+      varying float vKind;
+      void main() {
+        vec3 center = (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+        vec2 d = normalize(cameraPosition.xz - center.xz + vec2(1e-4, 0.0));
+        vec3 side;
+        float fade = 1.0;
+        if (aKind < 0.5) {
+          side = vec3(-d.y, 0.0, d.x);
+        } else {
+          side = vec3(cos(aAngle), 0.0, sin(aAngle));
+          // crossed planes fade out edge-on so they never show as thin streaks
+          fade = 0.45 * smoothstep(0.2, 0.8, abs(dot(vec2(-side.z, side.x), d)));
+        }
+        float s = length(modelMatrix[0].xyz);
+        vec3 world = center + side * (aQuad.x * 0.5 * uSize.x * s) + vec3(0.0, aQuad.y * uSize.y * s, 0.0);
+        vUv = aQuad;
+        vFade = fade;
+        vSeed = aSeed;
+        vKind = aKind;
+        gl_Position = projectionMatrix * viewMatrix * vec4(world, 1.0);
+      }`,
+    fragmentShader: /* glsl */ `
+      precision mediump float;
+      uniform sampler2D uNoise;
+      uniform vec4 uScroll;   // per-octave upward scroll, wrapped to 0–1 on the CPU
+      uniform float uHeight;  // share of the quad the flame fills (intensity + flicker)
+      uniform float uBright;
+      uniform float uSeed;
+      varying vec2 vUv;
+      varying float vFade;
+      varying float vSeed;
+      varying float vKind;
+
+      float nz(vec2 p) { return texture2D(uNoise, p).r; }
+
+      void main() {
+        // flame-space coords (the quad is wider than the flame body). Crossed planes draw a
+        // narrower, shorter flame that adds depth inside the billboard's silhouette.
+        float x = vUv.x * mix(1.333, 1.75, vKind);
+        float y = vUv.y / uHeight * mix(1.0, 1.2, vKind);
+        vec2 p = vec2(x * 0.045 + vSeed + uSeed, vUv.y * 0.09);
+        // 4-octave fbm scrolling upward
+        float n = 0.5 * nz(p + vec2(0.0, -uScroll.x))
+                + 0.25 * nz(p * 2.0 + vec2(0.31, -uScroll.y))
+                + 0.125 * nz(p * 4.0 + vec2(0.57, -uScroll.z))
+                + 0.0625 * nz(p * 8.0 + vec2(0.11, -uScroll.w));
+        n = clamp((n / 0.9375 - 0.5) * 2.2 + 0.5, 0.0, 1.0); // blurred fbm is low-contrast: stretch it
+        // a second, narrower noise splits the upper flame into separate tongues
+        float tongues = nz(vec2(x * 0.11 + uSeed * 1.7 + vSeed, vUv.y * 0.05 - uScroll.y));
+
+        // distort: sideways wobble and upward stretch, both growing with height
+        float xd = x + (n - 0.5) * 1.6 * y;
+        float yd = y - (n - 0.45) * 0.9 * y;
+        // teardrop: wide rounded base on the surface, tapering upward
+        float w = 0.9 * pow(clamp(1.0 - yd, 0.0, 1.0), 0.7) * smoothstep(-0.3, 0.1, yd);
+        float body = 1.0 - smoothstep(0.25 * w, w + 0.01, abs(xd));
+        // heat: hottest low and central, eroded by noise toward the tips (licks)
+        float heat = body * (1.25 - 0.8 * yd) - (1.0 - n) * (0.15 + 0.9 * yd) - (1.0 - tongues) * 0.9 * yd * yd;
+        heat = clamp(heat * 1.6, 0.0, 1.0);
+        if (heat <= 0.0) discard;
+
+        // transparent → deep red → orange → yellow → near-white core. Every stop has G <= R,
+        // so additive overlaps can clip to yellow-white but never tint green.
+        vec3 c = mix(vec3(0.32, 0.015, 0.0), vec3(0.92, 0.2, 0.015), smoothstep(0.0, 0.35, heat));
+        c = mix(c, vec3(1.0, 0.45, 0.05), smoothstep(0.3, 0.6, heat));
+        c = mix(c, vec3(1.0, 0.6, 0.17), smoothstep(0.6, 0.9, heat));
+        float core = smoothstep(0.8, 1.0, heat) * (1.0 - smoothstep(0.0, 0.35, y)) * (1.0 - smoothstep(0.0, 0.4, abs(x)));
+        c = mix(c, vec3(1.0, 0.88, 0.72), core);
+
+        // fade out before the quad edges so wandering tongues are never cut off,
+        // and softly at the very bottom so the base doesn't end in a hard line
+        float edge = (1.0 - smoothstep(0.75, 1.0, abs(vUv.x))) * (1.0 - smoothstep(0.85, 1.0, vUv.y)) * smoothstep(0.0, 0.05, vUv.y);
+        float a = smoothstep(0.0, 0.3, heat) * vFade * edge;
+        gl_FragColor = vec4(c * (a * uBright), a);
+      }`,
+    transparent: true,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  return setBlend(mat, 'additive');
 }
 
 export class Fire {
@@ -289,25 +509,24 @@ export class Fire {
     this.age = 0;
     this.sound = null;
     this._wantSound = false;
+    this._seed = Math.random() * 100;
     _fires.add(this);
     _budgetCheckedAt = -Infinity; // recount on the next update
 
-    // flames
-    const f = makePoints(FLAME_N, glowTexture(), 'additive');
-    this._fGeo = f.geo; this._fMat = f.mat; this._fPos = f.pos; this._fCol = f.col; this._fSize = f.size;
-    this._fVel = new Float32Array(FLAME_N * 3);
-    this._fLife = new Float32Array(FLAME_N);
-    this._fAge = new Float32Array(FLAME_N);
-    this._fSeed = new Float32Array(FLAME_N);
-    for (let i = 0; i < FLAME_N; i++) {
-      this._fSeed[i] = Math.random() * 100;
-      this._respawnFlame(i);
-      this._fAge[i] = Math.random() * this._fLife[i];
-    }
-    f.pts.renderOrder = 10;
-    this.group.add(f.pts);
+    // scorch mark on the surface under the fire
+    this._scorch = new THREE.Mesh(
+      new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2),
+      new THREE.MeshBasicMaterial({
+        map: scorchTexture(), transparent: true, opacity: 0, depthWrite: false,
+        polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4,
+      }),
+    );
+    this._scorch.position.y = 0.004;
+    this._scorch.rotation.y = Math.random() * Math.PI * 2;
+    this._scorch.renderOrder = 1;
+    this.group.add(this._scorch);
 
-    // gray smoke puffs rising off the flames
+    // gray smoke puffs rising off the flame
     const p = makePoints(PUFF_N, puffTexture(), 'normal');
     this._pGeo = p.geo; this._pMat = p.mat; this._pPos = p.pos; this._pCol = p.col; this._pSize = p.size;
     this._pLife = new Float32Array(PUFF_N);
@@ -320,18 +539,36 @@ export class Fire {
     p.pts.renderOrder = 8;
     this.group.add(p.pts);
 
-    // glow at the base
-    const glowMat = new THREE.SpriteMaterial({
-      map: glowTexture(), color: 0xff5a10, transparent: true, opacity: 0.35,
-      depthWrite: false,
-    });
-    setBlend(glowMat, 'additive');
-    glowMat.blendSrc = THREE.SrcAlphaFactor; // the sprite shader doesn't premultiply, so weight rgb by alpha here
-    this._glow = new THREE.Sprite(glowMat);
-    this._glow.renderOrder = 9;
-    this.group.add(this._glow);
+    // faint halo around the flame (camera bloom)
+    this._halo = this._glowSprite(0.12, 9, true);
 
-    // flickering light (first MAX_FIRE_LIGHTS fires only)
+    // the flame
+    this._flameMat = flameMaterial(scale);
+    this._flame = new THREE.Mesh(flameGeometry(), this._flameMat);
+    this._flame.frustumCulled = false; // vertices are placed in the shader
+    this._flame.renderOrder = 10;
+    this.group.add(this._flame);
+
+    // embers / sparks
+    const e = makePoints(EMBER_N, glowTexture(), 'additive');
+    this._eGeo = e.geo; this._eMat = e.mat; this._ePos = e.pos; this._eCol = e.col; this._eSize = e.size;
+    this._eVel = new Float32Array(EMBER_N * 3);
+    this._eLife = new Float32Array(EMBER_N);
+    this._eAge = new Float32Array(EMBER_N);
+    this._eSeed = new Float32Array(EMBER_N);
+    for (let i = 0; i < EMBER_N; i++) {
+      this._eSeed[i] = Math.random() * 50;
+      this._respawnEmber(i);
+      this._eAge[i] = Math.random() * this._eLife[i];
+    }
+    e.pts.renderOrder = 11;
+    this.group.add(e.pts);
+
+    // glow pass drawn after the head fog (999): flames read as an orange glow through smoke
+    // not depth-tested: light scattered by smoke isn't cut off by the table/floor it sits on
+    this._fogGlow = this._glowSprite(0, 1000, false);
+
+    // breathing light (first MAX_FIRE_LIGHTS fires only)
     this.light = null;
     if (_lightsUsed < MAX_FIRE_LIGHTS) {
       _lightsUsed++;
@@ -343,25 +580,37 @@ export class Fire {
     this.update(0, false);
   }
 
-  _respawnFlame(i) {
-    const s = this.baseScale * (0.65 + 0.45 * this.intensity);
-    const r = 0.17 * s * Math.sqrt(Math.random());
+  _glowSprite(opacity, renderOrder, depthTest) {
+    const mat = new THREE.SpriteMaterial({
+      map: softGlowTexture(), color: 0xff5a12, transparent: true, opacity, depthWrite: false, depthTest,
+    });
+    setBlend(mat, 'additive');
+    mat.blendSrc = THREE.SrcAlphaFactor; // the sprite shader doesn't premultiply, so weight rgb by alpha here
+    const sp = new THREE.Sprite(mat);
+    sp.renderOrder = renderOrder;
+    this.group.add(sp);
+    return sp;
+  }
+
+  _respawnEmber(i) {
+    const s = this.baseScale;
     const a = Math.random() * Math.PI * 2;
-    const p = this._fPos, v = this._fVel;
+    const r = 0.12 * s * Math.sqrt(Math.random());
+    const p = this._ePos, v = this._eVel;
     p[i * 3] = Math.cos(a) * r;
-    p[i * 3 + 1] = 0.05;
+    p[i * 3 + 1] = (0.1 + Math.random() * 0.3) * s;
     p[i * 3 + 2] = Math.sin(a) * r;
-    v[i * 3] = (Math.random() - 0.5) * 0.1;
-    v[i * 3 + 1] = (0.55 + Math.random() * 0.75) * s;
-    v[i * 3 + 2] = (Math.random() - 0.5) * 0.1;
-    this._fLife[i] = 0.55 + Math.random() * 0.7;
-    this._fAge[i] = 0;
+    v[i * 3] = (Math.random() - 0.5) * 0.4;
+    v[i * 3 + 1] = (0.6 + Math.random() * 0.9) * s;
+    v[i * 3 + 2] = (Math.random() - 0.5) * 0.4;
+    this._eLife[i] = 0.8 + Math.random() * 1.4;
+    this._eAge[i] = 0;
   }
 
   _respawnPuff(i) {
     const s = this.baseScale * (0.65 + 0.45 * this.intensity);
     this._pPos[i * 3] = (Math.random() - 0.5) * 0.2 * s;
-    this._pPos[i * 3 + 1] = 0.3 * s;
+    this._pPos[i * 3 + 1] = 0.55 * s;
     this._pPos[i * 3 + 2] = (Math.random() - 0.5) * 0.2 * s;
     this._pDrift[i * 2] = (Math.random() - 0.5) * 0.2;
     this._pDrift[i * 2 + 1] = (Math.random() - 0.5) * 0.2;
@@ -379,40 +628,44 @@ export class Fire {
     if (growing) this.intensity = Math.min(1, this.intensity + dt * 0.04);
     const s = this.baseScale * (0.65 + 0.45 * this.intensity);
     const t = this.age;
+    const fl = flicker(t, this._seed);
+    const fl2 = flicker(t * 1.3, this._seed + 17);
 
-    // share of the particle budget; fewer particles → each one a bit bigger and brighter
+    // flame shader: scroll noise upward (wrapped per octave so the shader stays at small numbers)
+    const u = this._flameMat.uniforms;
+    const rise = t * 0.16;
+    u.uScroll.value.set(rise % 1, (rise * 2.1) % 1, (rise * 4.3) % 1, (rise * 8.9) % 1);
+    u.uHeight.value = (FLAME_NOMINAL_H / FLAME_H) * (0.55 + 0.45 * this.intensity) * (0.9 + 0.1 * fl2);
+    u.uBright.value = (0.8 + 0.3 * this.intensity) * (0.9 + 0.1 * fl);
+
+    // share of the particle budget for embers and puffs
     const share = Math.floor(FIRE_BUDGET / sceneFireCount());
-    const nFlame = Math.min(FLAME_N, Math.max(1, Math.round(share * 0.76)));
-    const nPuff = Math.min(PUFF_N, Math.max(0, share - nFlame));
-    this._fGeo.setDrawRange(0, nFlame);
+    const nEmber = Math.min(EMBER_N, Math.max(0, Math.round(share * 0.3)));
+    const nPuff = Math.min(PUFF_N, Math.max(0, share - nEmber));
+    this._eGeo.setDrawRange(0, nEmber);
     this._pGeo.setDrawRange(0, nPuff);
-    const boost = Math.min(2.2, Math.sqrt(FLAME_N / nFlame));
 
-    // flames: rise, pull into a cone, sway. Yellow-orange → orange → dark red.
-    // Low per-particle alpha so overlaps stay orange instead of burning out to white,
-    // and fade in from 0 so the base doesn't show a hard cut where it meets the table.
-    const p = this._fPos, v = this._fVel, c = this._fCol, sz = this._fSize;
-    const flameA = 0.42 * boost * (0.8 + 0.3 * this.intensity);
-    const flameS = s * (0.85 + 0.15 * boost);
-    for (let i = 0; i < nFlame; i++) {
-      this._fAge[i] += dt;
-      if (this._fAge[i] >= this._fLife[i]) this._respawnFlame(i);
-      const k = this._fAge[i] / this._fLife[i];
-      const k1 = 1 - k;
+    // embers: rise fast, drift and swirl, wink on and off, then die out
+    const ep = this._ePos, ev = this._eVel, ec = this._eCol, es = this._eSize;
+    for (let i = 0; i < nEmber; i++) {
+      this._eAge[i] += dt;
+      if (this._eAge[i] >= this._eLife[i]) this._respawnEmber(i);
+      const k = this._eAge[i] / this._eLife[i];
+      const sd = this._eSeed[i];
       const i3 = i * 3, i4 = i * 4;
-      const sway = Math.sin(t * 6 + this._fSeed[i]) * 0.06;
-      p[i3] += (v[i3] + sway) * dt - p[i3] * dt * 1.8;
-      p[i3 + 1] += v[i3 + 1] * dt;
-      p[i3 + 2] += v[i3 + 2] * dt - p[i3 + 2] * dt * 1.8;
-      c[i4] = 1.0 - 0.45 * k * k;
-      c[i4 + 1] = 0.08 + 0.62 * k1 * k1;
-      c[i4 + 2] = 0.22 * k1 * k1 * k1 * k1;
-      c[i4 + 3] = Math.min(1, k * 5) * Math.pow(k1, 1.2) * flameA;
-      sz[i] = (0.3 - 0.17 * k) * flameS;
+      ep[i3] += (ev[i3] + Math.sin(t * 3 + sd) * 0.25) * dt;
+      ep[i3 + 1] += ev[i3 + 1] * dt * (1 - 0.5 * k);
+      ep[i3 + 2] += (ev[i3 + 2] + Math.cos(t * 2.6 + sd) * 0.25) * dt;
+      const wink = Math.min(1, Math.max(0, Math.sin(t * (8 + (sd % 7)) + sd) * 2 + 1.2));
+      ec[i4] = 1.0;
+      ec[i4 + 1] = 0.55 - 0.3 * k;
+      ec[i4 + 2] = 0.12 - 0.1 * k;
+      ec[i4 + 3] = Math.min(1, k * 8) * (1 - k) * wink * 0.95;
+      es[i] = (0.03 - 0.015 * k) * this.baseScale;
     }
-    markDirty(this._fGeo);
+    markDirty(this._eGeo);
 
-    // smoke puffs: dark column rising off the flames toward the ceiling, growing and fading
+    // smoke puffs: dark column rising off the flame toward the ceiling, growing and fading
     const pp = this._pPos, pc = this._pCol, ps = this._pSize;
     const puffA = 0.5 * (0.6 + 0.4 * this.intensity) * Math.min(1.8, Math.sqrt(PUFF_N / Math.max(1, nPuff)));
     for (let i = 0; i < nPuff; i++) {
@@ -429,13 +682,23 @@ export class Fire {
     }
     markDirty(this._pGeo);
 
-    const flick = 0.75 + Math.random() * 0.35 + 0.15 * Math.sin(t * 17);
-    if (this.light) this.light.intensity = 2.4 * this.intensity * flick;
-    // glow sits above the surface so the table/floor doesn't slice it into a half-disc
-    const g = 0.7 * s * (0.9 + 0.1 * Math.sin(t * 11));
-    this._glow.scale.setScalar(g);
-    this._glow.position.y = 0.42 * g;
-    this._glow.material.opacity = 0.3 + 0.1 * flick;
+    const flameH = FLAME_H * this.baseScale * u.uHeight.value;
+    if (this.light) {
+      this.light.intensity = 2.4 * this.intensity * fl;
+      this.light.position.y = 0.3 * flameH + 0.03 * Math.sin(t * 5.1 + this._seed);
+    }
+    this._halo.scale.setScalar(1.1 * flameH);
+    this._halo.position.y = 0.5 * flameH; // bottom edge at the surface, so it isn't sliced off
+    this._halo.material.opacity = 0.1 * fl;
+    // through the smoke: dim glow scaled by how deep the head is in it
+    this._fogGlow.visible = _headFog > 0.02;
+    this._fogGlow.scale.setScalar(2.6 * flameH);
+    this._fogGlow.position.y = 0.4 * flameH;
+    this._fogGlow.material.opacity = _headFog * (0.35 + 0.2 * this.intensity) * fl;
+
+    const sc = this.baseScale * (0.7 + 0.5 * this.intensity);
+    this._scorch.scale.set(sc, 1, sc);
+    this._scorch.material.opacity = Math.min(1, t / 4) * (0.7 + 0.3 * this.intensity);
     if (this.sound) this.sound.setVolume(0.5 + 0.5 * this.intensity);
   }
 
@@ -471,9 +734,11 @@ export class Fire {
   dispose() {
     this.stopSound();
     if (this.sound) this.sound.disconnect?.();
-    this._fGeo.dispose(); this._fMat.dispose();
+    this._flame.geometry.dispose(); this._flameMat.dispose();
+    this._eGeo.dispose(); this._eMat.dispose();
     this._pGeo.dispose(); this._pMat.dispose();
-    this._glow.material.dispose();
+    this._scorch.geometry.dispose(); this._scorch.material.dispose();
+    this._halo.material.dispose(); this._fogGlow.material.dispose();
     if (this.light) { _lightsUsed--; this.light = null; }
     _fires.delete(this);
     _budgetCheckedAt = -Infinity;
@@ -594,6 +859,7 @@ export class Smoke {
     this._fogLevel = 0;
     this.fog.material.opacity = 0;
     this.fog.visible = false;
+    _headFog = 0;
   }
 
   /** Center the smoke over the room's floor. */
@@ -655,6 +921,7 @@ export class Smoke {
     this._fogLevel += (depth * this.fogMax - this._fogLevel) * Math.min(1, dt * 4);
     this.fog.material.opacity = this._fogLevel;
     this.fog.visible = this._fogLevel > 0.01;
+    _headFog = this._fogLevel / this.fogMax;
     return depth;
   }
 }
