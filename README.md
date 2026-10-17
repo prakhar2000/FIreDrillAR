@@ -100,6 +100,23 @@ An instructor builds a fire drill inside a real room in AR, using their voice an
 
 Only Prakhar needs the Quest and only Devaj needs DataFeel. Everyone else builds and tests in Chrome on their own laptop. Each person owns separate files, so merges don't collide.
 
+### Mac vs Windows
+
+**Mac:** Prakhar, Varnika, Emma · **Windows:** Eileen, Devaj
+
+The ones that can actually break the demo:
+1. **Devaj's server unreachable.** Prakhar's Vite proxies `/py` to Devaj's laptop on port 8000. Windows marks a phone hotspot as *Public* and the firewall blocks it. Devaj: Settings → Network → hotspot → **Private**, and allow Python on Private networks. Test with `https://<prakhar-ip>:5173/py/health`.
+2. **Getting the AR clip off the Quest (Prakhar, Mac).** macOS can't browse the headset like a drive. Install **Meta Quest Developer Hub** (or `adb`) *before* the Quest slot.
+3. **DataFeel SDK.** It's Unity/.NET, so it most likely works best on Windows. Keep the server and driver on Devaj's Windows laptop. Read the El Jefe's port from config (`COM3` on Windows vs `/dev/tty.usbmodem…` on Mac), never hard-code it.
+4. **Line endings.** `.gitattributes` forces LF for everyone, so Windows commits don't show whole-file diffs or conflicts. Don't remove it.
+
+Smaller:
+- **Eileen's desktop demo (Windows):** Chrome may run on the weak integrated GPU. Settings → Display → Graphics → Chrome → **High performance**. Check `chrome://gpu`.
+- **Emma's mic (Mac):** allow Chrome in System Settings → Privacy & Security → Microphone, then restart Chrome. Use `new AudioContext({ sampleRate: 16000 })` instead of assuming the hardware rate.
+- **Python deps:** `requirements.txt` is written by hand, not `pip freeze` (a Mac freeze pins `uvloop`, which won't install on Windows).
+- **Code:** lowercase filenames, imports match case exactly; `path.join` / `pathlib`, no hard-coded slashes; no `rm`/`cp`/`VAR=x cmd` in `package.json` scripts.
+- **Sign text:** name a font both have (`bold 64px Arial`).
+
 ---
 
 ## 6. Setup from scratch
@@ -246,8 +263,9 @@ Open the `https://localhost:5173` link Vite prints, and click past the certifica
 cd firedrill/server
 python3 -m venv .venv && source .venv/bin/activate     # Windows: py -m venv .venv ; .venv\Scripts\activate
 pip install fastapi "uvicorn[standard]" httpx python-dotenv
-pip freeze > requirements.txt
 ```
+
+Write `server/requirements.txt` by hand with those four lines (`fastapi`, `uvicorn[standard]`, `httpx`, `python-dotenv`). Don't use `pip freeze`; see "Mac vs Windows" in section 5.
 
 `server/.env` (never commit this):
 ```

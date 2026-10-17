@@ -20,3 +20,4 @@ Keep edits short and factual. Don't rewrite other people's sections beyond what 
 - Work on your own branch (`prakhar`, `varnika`, `eileen`, `devaj`, `emma`); Prakhar merges into `main`.
 - Never commit `server/.env` or any API key.
 - After 5:30 PM: no new features, fixes only.
+- The team is mixed Mac (Prakhar, Varnika, Emma) and Windows (Eileen, Devaj). Code and commands must work on both; follow README section 5, "Mac vs Windows". Add new cross-platform gotchas there.
