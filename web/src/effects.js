@@ -2442,3 +2442,14 @@ export class ExitSign {
     this.sprite.removeFromParent();
   }
 }
+
+// Vision Pro drill hook, called by eileen-xr.js. ponytail: stub until Varnika fills it in.
+// roomRoot = the scan group (scan coordinates); returned positions are XR world coordinates.
+export function createXRFire(roomRoot, camera) {
+  return {
+    ignite(roomPos) {},              // roomPos [x, y, z] in scan coordinates
+    update(dt, running) { return 0; }, // smoke depth at the head, 0–1
+    worldFires() { return []; },     // THREE.Vector3[] for heat and the voice agent
+    reset() {},
+  };
+}

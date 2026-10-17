@@ -83,7 +83,7 @@ export function poseRelay() {
         const member = members.get(client);
         if (member?.role !== 'observer' || data?.roomId !== '10_17_2026'
           || !Array.isArray(data.items) || data.items.length > 500
-          || !data.items.every((item) => ['exit', 'blocked', 'waypoint'].includes(item?.type)
+          || !data.items.every((item) => ['exit', 'blocked', 'waypoint', 'fire'].includes(item?.type)
             && vector(item.position, 3))) return;
         const snapshot = { roomId: data.roomId, items: data.items.map((item) => ({
           type: item.type, position: item.position, source: item.source === 'geometry-draft' ? 'geometry-draft' : 'manual',

@@ -132,3 +132,7 @@ export function start() {
   });
   window.addEventListener('pagehide', () => { if (session) cleanup(session); });
 }
+
+// Vision Pro voice agent, called by eileen-xr.js once VR starts. ponytail: stub until Emma fills it in.
+// getContext() → { head, facing, fires, exits, blocked } as [x, y, z] arrays in XR world space.
+export function startAgent(getContext) {}

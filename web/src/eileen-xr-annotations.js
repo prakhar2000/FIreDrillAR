@@ -15,6 +15,7 @@ export function createHeadsetAnnotations(parent) {
     group.clear();
     const route = [];
     for (const item of snapshot.items) {
+      if (item.type === 'fire') continue; // drawn by the fire itself
       const point = new THREE.Vector3().fromArray(item.position);
       const waypoint = item.type === 'waypoint';
       const color = item.type === 'blocked' ? 0xff6262 : 0x55f0ad;

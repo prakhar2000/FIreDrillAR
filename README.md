@@ -348,9 +348,32 @@ Everyone codes against these, so pieces plug together at merge time.
 **Calling it** (`heat.js`, Devaj): `connect()` once at startup (`main.js` already does), then each frame in the drill loop:
 `send({ ...heatFrom(headPos, headQuat, firePositions), buzz, cool })`. `headPos`/`headQuat` are the camera's world position and quaternion (three.js objects work as-is); `firePositions` are the fires' world positions. `send` keeps only the newest message and handles the 4/s limit and reconnects, so call it freely.
 
+**Vision Pro drill hooks** (`eileen-xr.js` calls these; stubs are in place, owners fill them in). Positions are XR world unless noted:
+- `createXRFire(roomRoot, camera)` (effects.js) → `{ ignite(scanPos), update(dt, running) → smokeDepth 0–1, worldFires() → Vector3[], reset() }`
+- `drill` (drill.js) `.start()`, `.update(dt, { smokeDepth, head, exits }) → { time, oxygen 0–1, smokeDepth, escaped, timedOut }`, `.stop(reason)`, `.stats() → { time, oxygen, smokeTime, pctLow, checkedBlocked }`
+- `createXRHud(camera)` (hud.js) → `{ update(state), review(stats) }`
+- `startAgent(getContext)` (voice.js): `getContext() → { head, facing, fires, exits, blocked }` as `[x,y,z]` arrays
+- `POST /py/agent` (server): `{ transcript, head, facing, fires, exits, blocked } → { reply }`
+- Ignition: an annotation item `{ type: 'fire', position }` (scan coordinates) from the observer. Test without it: `firedrill.ignite([x, y, z])` in the headset page console.
+
 ---
 
 ## 8. Build plan by person
+
+### Today's demo: Vision Pro (WebXR), decided 4:50 PM
+The demo runs on Eileen's Vision Pro page (`web/eileen-xr.html`, `immersive-vr` in Safari: the textured scan, not passthrough). The desktop observer (`desktop.js`) aligns the headset and places markers. A Unity Vision Pro port comes **after** the hackathon: it needs a Mac, a paid Unity license tier, and the fire shaders rewritten in Shader Graph, and visionOS gives no camera frames without Apple's Enterprise entitlement. The 5:30 feature freeze still applies unless the team agrees to move it.
+
+Flow: the observer places a fire in a corner of the scan → the headset sees fire and smoke → the EXIT signs light up and route arrows appear at once → the user walks out while the agent coaches by voice, the wrists warm near the fire, and the oxygen bar drains in smoke → review screen with time and oxygen.
+
+Paste-ready instructions for each person's agent: [`TASKS-visionpro.md`](TASKS-visionpro.md). The wiring and stubs are already in `eileen-xr.js`, so everyone can start at once.
+
+| Who | Task | Files |
+|---|---|---|
+| Eileen | Add a Fire tool to the observer. On ignition, run Auto route from the headset to the nearest unblocked EXIT and show it. Exits come from the observer's EXIT marks on the scan; that is our "exit-sign detection". After ignition, show large glowing EXIT signs and floor arrows. | `eileen-*.js`, `desktop.js` |
+| Varnika | Fill in `createXRFire()`: `FireSystem` + `Smoke` burning the scan from the fire marker, firelight on the scan, and the frame rate held in visionOS Safari. | `effects.js` |
+| Prakhar | Host: Vite with `vite.eileen.config.js` plus `PY_SERVER`. In-headset HUD: drill timer, an oxygen bar that drains with `smoke.update()` depth, and a review panel (escape time, oxygen left, time in smoke). Merge to `main`. | `hud.js`, `drill.js` (Eileen's, agreed) |
+| Emma | Hands-free voice: start the mic when VR starts, keep listening, and send each finished turn to `/py/agent`. Speak the reply with `speechSynthesis`. Test the mic in visionOS Safari first. Pitch and submission. | `voice.js`, `pitch/` |
+| Devaj | `/py/agent`: transcript + headset position, fire and exits → a short spoken direction from Claude. Check the heat stream from the headset (already wired in `eileen-xr.js`). Wear the DataFeel on the wrists and test. Stretch: find EXIT signs automatically in the scan textures with Claude vision. | `server/`, `heat.js` |
 
 ### Prakhar — XR lead + host
 - **Scaffold** (Vite HTTPS app, placeholder modules, `server/app.py`): ✅ done
@@ -412,7 +435,7 @@ Everyone codes against these, so pieces plug together at merge time.
 
 *Done when:* walking toward the fire in desktop mode warms the correct wrist, standing up in smoke buzzes, and reaching the exit gives a cool pulse.
 
-5. 🚧 **Phone-AR fire (`unity/`)**, copied from a personal Unity project and not yet compiled or run. Open it with Unity Hub → Add → `unity/` (Unity 6000.5.10f1). Then run **Fire > Build AR Scene**, which writes `Assets/Fire/Scenes/FireAR.unity`. Tapping a detected plane ignites a fire, which spreads over the planes with smoke and firelight. `Library/` is regenerated and gitignored.
+5. ⏸ **Phone-AR fire (`unity/`)**, paused for today's Vision Pro demo; port to visionOS after the hackathon. It compiles and Build AR Scene runs; the Vulkan black-screen fix is untested on a phone. Open it with Unity Hub → Add → `unity/` (Unity 6000.5.10f1). Then run **Fire > Build AR Scene**, which writes `Assets/Fire/Scenes/FireAR.unity`. Tapping a detected plane ignites a fire, which spreads over the planes with smoke and firelight. `Library/` is regenerated and gitignored.
 
 ### Emma — Voice, sound, pitch (`voice.js`, `public/sounds/`, `pitch/`)
 1. **Voice (`voice.js`):**

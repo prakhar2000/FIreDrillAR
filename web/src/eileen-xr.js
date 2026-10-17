@@ -2,6 +2,11 @@ import * as THREE from 'three';
 import { connectPoseChannel } from './eileen-pose-channel.js';
 import { loadHeadsetRoom, roomToXRMatrix } from './eileen-xr-room.js';
 import { createHeadsetAnnotations } from './eileen-xr-annotations.js';
+import { createXRFire } from './effects.js';
+import { createXRHud } from './hud.js';
+import { drill } from './drill.js';
+import { startAgent } from './voice.js';
+import { connect as connectHeat, send as sendHeat, heatFrom } from './heat.js';
 
 const startButton = document.querySelector('#start');
 const stopButton = document.querySelector('#stop');
@@ -16,6 +21,48 @@ let roomRoot, roomPreview, roomReady = false;
 let pendingAlignment = null;
 let updateAnnotations;
 const roomStatus = document.querySelector('#model-status');
+
+// Drill: the observer's `fire` marker ignites; each frame feeds fire → drill → HUD, heat and the voice agent.
+let fire, hud, items = [], firedAt = '', drillOn = false, lastTime = 0;
+const head = new THREE.Vector3(), headQuat = new THREE.Quaternion();
+const worldPoints = (type) => items.filter((item) => item.type === type)
+  .map((item) => roomRoot.localToWorld(new THREE.Vector3().fromArray(item.position)));
+
+function onSnapshot(snapshot) {
+  if (snapshot?.roomId !== '10_17_2026') return;
+  items = snapshot.items;
+  const marker = items.find((item) => item.type === 'fire');
+  const key = marker ? marker.position.join() : '';
+  if (key === firedAt) return;
+  firedAt = key;
+  fire.reset();
+  drillOn = !!marker;
+  if (marker) { fire.ignite(marker.position); drill.start(); }
+}
+
+function stepDrill(dt, smokeDepth) {
+  const state = drill.update(dt, { smokeDepth, head, exits: worldPoints('exit') });
+  hud.update(state);
+  const done = state.escaped || state.timedOut;
+  sendHeat(done ? { left: 0, right: 0, buzz: false, cool: true }
+    : { ...heatFrom(head, headQuat, fire.worldFires()), buzz: smokeDepth > 0.5, cool: false });
+  if (!done) return;
+  drillOn = false;
+  drill.stop(state.escaped ? 'escaped' : 'timeout');
+  hud.review(drill.stats());
+}
+
+// Test without the observer: firedrill.ignite([x, y, z]) in the console (scan coordinates).
+window.firedrill = { ignite: (position) => onSnapshot({ roomId: '10_17_2026',
+  items: [...items.filter((item) => item.type !== 'fire'), { type: 'fire', position }] }) };
+
+const agentContext = () => ({
+  head: head.toArray(),
+  facing: new THREE.Vector3(0, 0, -1).applyQuaternion(headQuat).toArray(),
+  fires: fire.worldFires().map((v) => v.toArray()),
+  exits: worldPoints('exit').map((v) => v.toArray()),
+  blocked: worldPoints('blocked').map((v) => v.toArray()),
+});
 
 function resetTracking() {
   pendingAlignment = null;
@@ -56,16 +103,23 @@ function makeView() {
   scene.add(new THREE.GridHelper(8, 16, 0x75aebd, 0x345261));
   camera = new THREE.PerspectiveCamera(60, 2, 0.05, 100);
   camera.position.set(0, 1.6, 2.5);
+  scene.add(camera); // so HUD children of the camera render
+  fire = createXRFire(roomRoot, camera);
+  hud = createXRHud(camera);
   const canvas = document.createElement('canvas'); canvas.width = 1024; canvas.height = 256;
   const texture = new THREE.CanvasTexture(canvas);
   label = { canvas, texture, text: '' };
   const sign = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 0.6), new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide }));
   sign.position.set(0, 1.6, -2); scene.add(sign);
   renderer.setAnimationLoop((time, frame) => {
+    const dt = Math.min(0.1, (time - lastTime) / 1000 || 0); lastTime = time;
+    const smokeDepth = fire.update(dt, drillOn);
     if (frame && session && reference) {
       const pose = session.visibilityState === 'visible' ? frame.getViewerPose(reference) : null;
       if (pose && !pose.emulatedPosition) {
         if (!hasPose) { resetTracking(); hasPose = true; }
+        head.copy(pose.transform.position); headQuat.copy(pose.transform.orientation);
+        if (drillOn) stepDrill(dt, smokeDepth);
         if (time - lastSend >= 50) {
           const p = pose.transform.position, q = pose.transform.orientation;
           if (channel?.sendPose({ sessionId, seq: seq++, position: [p.x, p.y, p.z], quaternion: [q.x, q.y, q.z, q.w] })) {
@@ -118,7 +172,7 @@ startButton.addEventListener('click', async () => {
     session.addEventListener('end', endSession, { once: true });
     makeView();
     channel = connectPoseChannel({ role: 'publisher', room: roomInput.value,
-      onAnnotations: (snapshot) => updateAnnotations(snapshot),
+      onAnnotations: (snapshot) => { updateAnnotations(snapshot); onSnapshot(snapshot); },
       onAlignment: applyRoomAlignment,
       onStatus: (message) => { connection.textContent = message; } });
     camera.position.set(0, 0, 0);
@@ -126,6 +180,8 @@ startButton.addEventListener('click', async () => {
     reference = renderer.xr.getReferenceSpace();
     reference.addEventListener('reset', resetTracking);
     resetTracking(); sent = 0;
+    connectHeat();
+    startAgent(agentContext);
     stopButton.disabled = false;
     support.textContent = 'VR active. Exit using the Digital Crown or Stop VR.';
   } catch (error) {
