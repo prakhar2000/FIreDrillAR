@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FireDrill — Headset connection</title>
+    <style>
+      body { margin:0; background:#101b29; color:#e4eef8; font:18px system-ui,sans-serif; }
+      main { max-width:720px; margin:auto; padding:28px; }
+      button,input { font:inherit; padding:12px; border-radius:8px; border:1px solid #60788e; }
+      button { background:#236a52; color:white; cursor:pointer; }
+      button:disabled { opacity:.5; cursor:default; }
+      input { width:180px; background:#263b4e; color:white; }
+      a { color:#74d7ff; } #view canvas { display:block; width:100%; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Connect your headset</h1>
+      <p>Send your head position and direction to the room observer.</p>
+      <label>Pairing code <input id="room" value="firedrill" maxlength="32" autocomplete="off" /></label>
+      <p><button id="start" disabled>Start VR</button> <button id="stop" disabled>Stop VR</button></p>
+      <p id="support" role="status">Checking immersive VR support…</p>
+      <p id="connection" role="status">Not connected</p>
+      <p id="tracking" role="status">No tracking session</p>
+      <p id="model-status" role="status">Loading room...</p>
+      <p>On the computer: use the same pairing code, choose Connect headset, then align your position and facing direction.</p>
+      <p>This VR view replaces the real-room view. Start with stationary head turns and small movements in a clear area. Press the Digital Crown to exit.</p>
+      <p><a href="/">Open room observer</a></p>
+      <div id="view"></div>
+    </main>
+    <script type="module" src="/src/eileen-xr.js"></script>
+  </body>
+</html>
