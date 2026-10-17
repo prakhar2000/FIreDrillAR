@@ -8,3 +8,8 @@
 /Builds/
 *.csproj
 *.sln
+/.utmp/
+*.apk
+*.aab
+*_BurstDebugInformation_DoNotShip/
+*_BackUpThisFolder_ButDontShipItWithYourGame/

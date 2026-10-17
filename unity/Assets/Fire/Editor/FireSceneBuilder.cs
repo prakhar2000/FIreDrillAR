@@ -213,6 +213,14 @@ public static class FireSceneBuilder
         var data = so.FindProperty("m_RendererDataList").GetArrayElementAtIndex(0).objectReferenceValue as ScriptableRendererData;
         so.ApplyModifiedProperties();
 
+        // ARCore on Vulkan throws every frame (black camera) without this; a no-op outside an AR session
+        if (!data.rendererFeatures.Any(f => f is ARCommandBufferSupportRendererFeature))
+        {
+            var ar = ScriptableObject.CreateInstance<ARCommandBufferSupportRendererFeature>();
+            ar.name = "ARCommandBufferSupport";
+            AddFeature(data, ar);
+        }
+
         var existing = data.rendererFeatures.FirstOrDefault(f => f && f.name == "HeatShimmer");
         if (existing) return existing;
 
@@ -230,6 +238,12 @@ public static class FireSceneBuilder
         feat.fetchColorBuffer = true;
         feat.requirements = ScriptableRenderPassInput.Color;
         feat.passMaterial = mat;
+        AddFeature(data, feat);
+        return feat;
+    }
+
+    static void AddFeature(ScriptableRendererData data, ScriptableRendererFeature feat)
+    {
         AssetDatabase.AddObjectToAsset(feat, data);
         AssetDatabase.TryGetGUIDAndLocalFileIdentifier(feat, out _, out long localId);
         var dso = new SerializedObject(data);
@@ -242,7 +256,6 @@ public static class FireSceneBuilder
         dso.ApplyModifiedProperties();
         EditorUtility.SetDirty(data);
         AssetDatabase.SaveAssets();
-        return feat;
     }
 
     // three's UnrealBloom (strength 0.55, radius 0.45, threshold 0.7), matched by eye
