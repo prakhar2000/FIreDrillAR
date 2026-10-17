@@ -110,16 +110,7 @@ The ones that can actually break the demo:
 3. **DataFeel SDK.** It's Unity/.NET, so it most likely works best on Windows. Keep the server and driver on Devaj's Windows laptop. Read the El Jefe's port from config (`COM3` on Windows vs `/dev/tty.usbmodem…` on Mac), never hard-code it.
 4. **Line endings.** `.gitattributes` forces LF for everyone, so Windows commits don't show whole-file diffs or conflicts. Don't remove it.
 
-Smaller:
-- **Eileen's desktop demo (Windows):** Chrome may run on the weak integrated GPU. Settings → Display → Graphics → Chrome → **High performance**. Check `chrome://gpu`.
-- **Emma's mic (Mac):** allow Chrome in System Settings → Privacy & Security → Microphone, then restart Chrome. Use `new AudioContext({ sampleRate: 16000 })` instead of assuming the hardware rate.
-- **Python deps:** `requirements.txt` is written by hand, not `pip freeze` (a Mac freeze pins `uvloop`, which won't install on Windows).
-- **Code:** lowercase filenames, imports match case exactly; `path.join` / `pathlib`, no hard-coded slashes; no `rm`/`cp`/`VAR=x cmd` in `package.json` scripts.
-- **Sign text:** name a font both have (`bold 64px Arial`).
-- **npm lockfile:** Rollup/esbuild ship per-OS binaries, and a `package-lock.json` made on a Mac can miss the Windows one (`Cannot find module @rollup/rollup-win32-x64-msvc`). Fix: delete `node_modules` and `npm install`; still broken → also delete `package-lock.json`, reinstall, commit it.
-- **Quest over USB (fallback if the hotspot fails):** Quest developer mode on, plug in, run `adb reverse tcp:5173 tcp:5173`, open `https://localhost:5173` in the Quest. Same cable lets desktop Chrome debug the Quest browser at `chrome://inspect`. Mac needs no driver; a Windows laptop needs Meta's Quest ADB driver.
-- **Quest Link / Air Link are Windows-only. We don't use them** (we run in the Quest browser); ignore tutorials that assume them.
-- **Certificate:** the Quest must accept the warning again whenever the laptop's IP changes (e.g. rejoining the hotspot). Looks like a "broken" page, isn't.
+**Full list (git, npm, Python, network, Quest, browser code, demo-day laptop prep): see "Mac vs Windows: full reference" in [AGENTS.md](AGENTS.md).**
 
 ---
 
