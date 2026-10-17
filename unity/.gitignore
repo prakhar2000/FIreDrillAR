@@ -1,0 +1,10 @@
+# Unity regenerates these
+/Library/
+/Temp/
+/Logs/
+/UserSettings/
+/obj/
+/Build/
+/Builds/
+*.csproj
+*.sln

@@ -179,6 +179,7 @@ firedrill/
       heat.js               (Devaj)   WebSocket to the server, heat direction math
       hud.js                (Prakhar) status text on screen / in headset
   server/                   (Devaj)   Python server + DataFeel driver
+  unity/                    (Devaj)   Unity 6000.5.10f1 phone-AR fire (ARCore/ARKit): tap a surface to ignite; code in Assets/Fire
   data/                     room.json and drill logs (commit room.json so everyone gets it)
   pitch/                    (Emma)    script, slides, video
   README.md                 this handbook
@@ -410,6 +411,8 @@ Everyone codes against these, so pieces plug together at merge time.
    - Heat changes over seconds, so start warming from a few metres away.
 
 *Done when:* walking toward the fire in desktop mode warms the correct wrist, standing up in smoke buzzes, and reaching the exit gives a cool pulse.
+
+5. 🚧 **Phone-AR fire (`unity/`)**, copied from a personal Unity project and not yet compiled or run. Open it with Unity Hub → Add → `unity/` (Unity 6000.5.10f1). Then run **Fire > Build AR Scene**, which writes `Assets/Fire/Scenes/FireAR.unity`. Tapping a detected plane ignites a fire, which spreads over the planes with smoke and firelight. `Library/` is regenerated and gitignored.
 
 ### Emma — Voice, sound, pitch (`voice.js`, `public/sounds/`, `pitch/`)
 1. **Voice (`voice.js`):**
