@@ -4,6 +4,8 @@ Each block below is a complete instruction for that person's coding agent. Copy 
 
 **Shared ground rules (already in each block):** pull first, edit only your files, keep `README.md` section 8 status current in the same commit, push to your own branch, and tell Prakhar when it's ready to merge. The team's 5:30 PM feature freeze still applies unless the team agrees to move it.
 
+**Unity:** Devaj has the Unity project (`unity/`) working, so he is the one who builds and runs it. Don't open, build or commit `unity/` yourself; send Unity changes or requests to Devaj. (A Vision Pro Unity build after the hackathon needs a Mac with Xcode; Devaj drives it from there.)
+
 **How the pieces fit:** `web/src/eileen-xr.js` already calls every hook below, and each hook has a working stub. You can each fill in your own piece and test it without waiting for anyone else. The contract is in README section 7, "Vision Pro drill hooks". Test without a headset: run the Eileen dev server (below), open `https://localhost:5173/eileen-xr.html` in Chrome with the **Immersive Web Emulator** extension, Start VR, then type `firedrill.ignite([0, 0, 0])` in the console (scan coordinates).
 
 Dev server (Prakhar hosts; anyone can run it locally):
@@ -117,7 +119,7 @@ Then: README section 8 row, commit, push `emma`, tell Prakhar. After that: pitch
 ```text
 Project: FireDrill AR (repo root). Read AGENTS.md and README.md sections 7 and 8 ("Vision Pro drill hooks", "Today's demo: Vision Pro") first. Never read server/.env. Today's demo is the Vision Pro WebXR page web/eileen-xr.html. Work on branch `devaj`; first run `git pull origin main`.
 
-Your files: server/ and web/src/heat.js.
+Your files: server/, web/src/heat.js and unity/. You have Unity working, so you are the only one who builds and runs the Unity app; the rest of the team sends Unity requests to you.
 
 1. POST /agent in server/app.py:
    - Body { transcript, head, facing, fires, exits, blocked } (XR world, metres, y up).

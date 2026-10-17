@@ -435,7 +435,7 @@ Paste-ready instructions for each person's agent: [`TASKS-visionpro.md`](TASKS-v
 
 *Done when:* walking toward the fire in desktop mode warms the correct wrist, standing up in smoke buzzes, and reaching the exit gives a cool pulse.
 
-5. ⏸ **Phone-AR fire (`unity/`)**, paused for today's Vision Pro demo; port to visionOS after the hackathon. It compiles and Build AR Scene runs; the Vulkan black-screen fix is untested on a phone. Open it with Unity Hub → Add → `unity/` (Unity 6000.5.10f1). Then run **Fire > Build AR Scene**, which writes `Assets/Fire/Scenes/FireAR.unity`. Tapping a detected plane ignites a fire, which spreads over the planes with smoke and firelight. `Library/` is regenerated and gitignored.
+5. ⏸ **Phone-AR fire (`unity/`)**, paused for today's Vision Pro demo; port to visionOS after the hackathon. Devaj has it working and is the only one who builds and runs the Unity app; send Unity requests to him. Open it with Unity Hub → Add → `unity/` (Unity 6000.5.10f1). Then run **Fire > Build AR Scene**, which writes `Assets/Fire/Scenes/FireAR.unity`. Tapping a detected plane ignites a fire, which spreads over the planes with smoke and firelight. `Library/` is regenerated and gitignored.
 
 ### Emma — Voice, sound, pitch (`voice.js`, `public/sounds/`, `pitch/`)
 1. **Voice (`voice.js`):**
