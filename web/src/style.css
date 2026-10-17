@@ -1,0 +1,12 @@
+html, body, #app {
+  margin: 0;
+  height: 100%;
+  background: #111;
+  color: #eee;
+  font-family: system-ui, sans-serif;
+}
+
+#status {
+  margin: 0;
+  padding: 1.25rem;
+}
