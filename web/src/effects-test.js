@@ -109,6 +109,7 @@ const smoke = new Smoke(scene, camera); // adds itself + head fog + audio listen
 const fires = [];
 const signs = [];
 let drillRunning = false;
+let drillTime = 0;
 
 function addFire(pos) {
   const f = new Fire(pos);
@@ -125,6 +126,7 @@ function addSign(pos, blocked) {
 function startDrill() {
   if (!fires.length) { log('Place a fire first (key 1, then click).'); return; }
   drillRunning = true;
+  drillTime = 0;
   smoke.start(CEILING);
   fires.forEach((f) => f.startSound());
   log('Drill running: crouch with C to stay under the smoke.');
@@ -139,7 +141,6 @@ function resetAll() {
 }
 
 const spread = new FireSpread({
-  interval: 12,
   onSpread: (pos, surface) => { addFire(pos); log(`Fire spread to the ${surface.label}!`); },
 });
 
@@ -162,6 +163,7 @@ addEventListener('keydown', (e) => {
   if (e.code === 'KeyC') crouch = !crouch;
   if (e.code === 'Space') { e.preventDefault(); startDrill(); }
   if (e.code === 'KeyR') resetAll();
+  if (e.code === 'KeyH') showHeat = !showHeat;
 });
 addEventListener('keyup', (e) => { keys[e.code] = false; });
 
@@ -212,6 +214,51 @@ for (let i = 0; i < 2; i++) {
   });
 }
 
+// ---------- heat debug (H, or ?heat=1): a bar over each furniture surface ----------
+// gray = protected by an open exit · green → yellow (smoldering from 60%) → red · orange = burning
+let showHeat = new URLSearchParams(location.search).has('heat');
+const heatBars = new THREE.Group();
+scene.add(heatBars);
+let heatBarsFor = null;
+const BAR_H = 0.5;
+const barMat = (color) => new THREE.SpriteMaterial({ color, depthTest: false, depthWrite: false, transparent: true, toneMapped: false });
+const heatCol = new THREE.Color();
+function updateHeatBars() {
+  heatBars.visible = showHeat;
+  if (!showHeat) return;
+  if (heatBarsFor !== spread.targets) {
+    heatBarsFor = spread.targets;
+    heatBars.children.slice().forEach((c) => { c.material.dispose(); heatBars.remove(c); });
+    for (const t of spread.targets) {
+      const x = t.top.x, y = t.top.y + 0.35, z = t.top.z;
+      const bg = new THREE.Sprite(barMat(0x111111)); bg.center.set(0.5, 0); bg.scale.set(0.09, BAR_H, 1);
+      const fill = new THREE.Sprite(barMat(0x22c55e)); fill.center.set(0.5, 0); fill.scale.set(0.06, 0.001, 1);
+      const mark = new THREE.Sprite(barMat(0xffffff)); mark.scale.set(0.12, 0.008, 1); // 60 %: smolder line
+      bg.position.set(x, y, z); fill.position.set(x, y, z); mark.position.set(x, y + BAR_H * 0.6, z);
+      bg.renderOrder = 1001; fill.renderOrder = 1002; mark.renderOrder = 1003;
+      fill.userData.target = t;
+      heatBars.add(bg, fill, mark);
+    }
+  }
+  for (const c of heatBars.children) {
+    const t = c.userData.target;
+    if (!t) continue;
+    const h = t.burning ? 1 : Math.min(1, t.heat);
+    c.scale.y = Math.max(0.001, BAR_H * h);
+    if (t.burning) heatCol.setHex(0xff7a1a);
+    else if (t.protected) heatCol.setHex(0x9ca3af);
+    else heatCol.setRGB(Math.min(1, h * 2), Math.min(1, 2 - h * 2) * 0.9, 0.1);
+    c.material.color.copy(heatCol);
+  }
+}
+
+// automation hook for screenshot tests
+window.effectsTest = {
+  addFire, addSign, startDrill, resetAll, spread, smoke, fires, signs,
+  look(x, y, z, yawRad, pitchRad, crouched = false) { camera.position.set(x, y, z); yaw = yawRad; pitch = pitchRad; crouch = crouched; },
+  get drillTime() { return drillTime; },
+};
+
 // ---------- HUD ----------
 const statsEl = document.getElementById('stats');
 const logEl = document.getElementById('log');
@@ -244,12 +291,15 @@ renderer.setAnimationLoop(() => {
   for (const f of fires) f.update(dt, drillRunning);
   const depth = smoke.update(dt, headY, fires);
   for (const s of signs) s.update(dt);
-  if (drillRunning) spread.update(dt, fires);
+  if (drillRunning) { drillTime += dt; spread.update(dt, fires, signs); }
+  updateHeatBars();
 
   statsEl.innerHTML =
     `Tool: <b>${tool}</b> · ${Math.round(fps)} FPS<br>` +
     `Head ${headY.toFixed(2)} m${crouch ? ' (crouched)' : ''} · fires ${fires.length}<br>` +
-    `Smoke bottom ${smoke.group.visible ? smoke.bottom.toFixed(2) + ' m' : 'off'} · depth <b>${depth.toFixed(2)}</b>`;
+    `Smoke bottom ${smoke.group.visible ? smoke.bottom.toFixed(2) + ' m' : 'off'} · depth <b>${depth.toFixed(2)}</b><br>` +
+    `Drill ${drillTime.toFixed(1)} s · total fire ${smoke.totalIntensity.toFixed(2)}` +
+    (showHeat ? '<br>' + spread.targets.map((t) => `${t.label} ${t.burning ? '🔥' : Math.round(t.heat * 100) + '%'}${t.protected ? ' (exit)' : ''}`).join(' · ') : '');
 
   renderer.render(scene, camera);
 });

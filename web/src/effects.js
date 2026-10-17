@@ -13,7 +13,9 @@ import * as THREE from 'three';
      fire.dispose()
      smoke.reset(), smoke.setCenter(x, z), smoke.bottom
      sign.update(dt)   (pulsing floor ring, blocked flicker), sign.dispose()
-     new FireSpread({ surfaces, onSpread }) → .update(dt, fires), .reset()   (stretch: fire spreading)
+     new FireSpread({ surfaces, onSpread }) → .update(dt, fires, exitSigns), .reset(), .targets[].heat
+                                (heat-based spreading, smolder wisps, open exits stay clear)
+     fire.spreadOver(area)    (FireSpread calls it: flames creep across big surfaces)
      setAudioListener(camera)   (Smoke does this for you)
 
    Built for Quest passthrough: premultiplied-alpha blending so fire stays bright
@@ -328,7 +330,7 @@ function loadFireBuffer() {
 // ---------------------------------------------------------------------
 const EMBER_N = 16;
 const PUFF_N = 32;
-const FLAME_W = 0.8;  // quad size in meters at scale 1, with room for tongues to wander
+const FLAME_W = 1.1;  // quad size in meters at scale 1, with room for tongues to wander and widen
 const FLAME_H = 1.4;
 const FLAME_NOMINAL_H = 1.1; // flame height at full intensity (tips can lick higher)
 
@@ -345,6 +347,8 @@ let _lightsUsed = 0;
 const _countIfInScene = (f) => { if (f.group.parent) _countAcc++; };
 // How far the viewer's head is in smoke (0–1). Smoke.update() writes it; fires use it to glow through the fog.
 let _headFog = 0;
+// Particles currently used by smoldering wisps (FireSpread); fires leave that much budget free.
+let _smolderInUse = 0;
 
 function sceneFireCount() {
   const now = performance.now();
@@ -401,6 +405,7 @@ function flameMaterial(scale) {
       uSize: { value: new THREE.Vector2(FLAME_W * scale, FLAME_H * scale) },
       uScroll: { value: new THREE.Vector4() },
       uHeight: { value: 0.7 },
+      uWidth: { value: 1 },
       uBright: { value: 1 },
       uSeed: { value: Math.random() },
     },
@@ -439,6 +444,7 @@ function flameMaterial(scale) {
       uniform sampler2D uNoise;
       uniform vec4 uScroll;   // per-octave upward scroll, wrapped to 0–1 on the CPU
       uniform float uHeight;  // share of the quad the flame fills (intensity + flicker)
+      uniform float uWidth;   // flame width factor: a thin lick when small, wide when grown
       uniform float uBright;
       uniform float uSeed;
       varying vec2 vUv;
@@ -451,7 +457,7 @@ function flameMaterial(scale) {
       void main() {
         // flame-space coords (the quad is wider than the flame body). Crossed planes draw a
         // narrower, shorter flame that adds depth inside the billboard's silhouette.
-        float x = vUv.x * mix(1.333, 1.75, vKind);
+        float x = vUv.x * mix(1.833, 2.4, vKind) / uWidth;
         float y = vUv.y / uHeight * mix(1.0, 1.2, vKind);
         vec2 p = vec2(x * 0.045 + vSeed + uSeed, vUv.y * 0.09);
         // 4-octave fbm scrolling upward
@@ -484,7 +490,7 @@ function flameMaterial(scale) {
 
         // fade out before the quad edges so wandering tongues are never cut off,
         // and softly at the very bottom so the base doesn't end in a hard line
-        float edge = (1.0 - smoothstep(0.75, 1.0, abs(vUv.x))) * (1.0 - smoothstep(0.85, 1.0, vUv.y)) * smoothstep(0.0, 0.05, vUv.y);
+        float edge = (1.0 - smoothstep(0.7, 1.0, abs(vUv.x))) * (1.0 - smoothstep(0.85, 1.0, vUv.y)) * smoothstep(0.0, 0.05, vUv.y);
         float a = smoothstep(0.0, 0.3, heat) * vFade * edge;
         gl_FragColor = vec4(c * (a * uBright), a);
       }`,
@@ -494,6 +500,18 @@ function flameMaterial(scale) {
   });
   return setBlend(mat, 'additive');
 }
+
+// Drive one flame material: upward noise scroll, height and width from intensity, flicker
+function setFlameUniforms(u, t, intensity, fl, fl2, widthMul = 1) {
+  const rise = t * 0.16; // wrapped per octave so the shader stays at small numbers
+  u.uScroll.value.set(rise % 1, (rise * 2.1) % 1, (rise * 4.3) % 1, (rise * 8.9) % 1);
+  u.uHeight.value = (FLAME_NOMINAL_H / FLAME_H) * (0.3 + 0.7 * intensity) * (0.9 + 0.1 * fl2);
+  u.uWidth.value = (0.4 + 0.6 * intensity) * widthMul;
+  u.uBright.value = (0.8 + 0.3 * intensity) * (0.9 + 0.1 * fl);
+}
+
+const MAX_CLUSTERS = 3;      // extra flames per fire on a big surface
+const CLUSTER_CREEP_S = 20;  // seconds for a cluster to creep from the start point to its edge
 
 export class Fire {
   /**
@@ -505,7 +523,11 @@ export class Fire {
     if (position) this.group.position.set(position.x, position.y, position.z);
     this.position = this.group.position;
     this.baseScale = scale;
-    this.intensity = 0.35; // 0–1, grows while growing === true
+    this.intensity = 0.15; // 0–1: starts as a lick of flame, grows while growing === true
+    this._growTime = 0;    // seconds spent growing (drives the creep across big surfaces)
+    this._clusters = [];   // extra flames creeping across a large surface (see spreadOver)
+    this._widthMul = 1;    // wider flames on big surfaces, so neighbouring clusters merge
+    this._scorchMax = Infinity; // scorch never wider than the surface it's on
     this.age = 0;
     this.sound = null;
     this._wantSound = false;
@@ -625,7 +647,10 @@ export class Fire {
   update(dt, growing = false) {
     dt = Math.min(dt, 0.05);
     this.age += dt;
-    if (growing) this.intensity = Math.min(1, this.intensity + dt * 0.04);
+    if (growing) {
+      this.intensity = Math.min(1, this.intensity + dt * 0.045);
+      this._growTime += dt;
+    }
     const s = this.baseScale * (0.65 + 0.45 * this.intensity);
     const t = this.age;
     const fl = flicker(t, this._seed);
@@ -633,13 +658,11 @@ export class Fire {
 
     // flame shader: scroll noise upward (wrapped per octave so the shader stays at small numbers)
     const u = this._flameMat.uniforms;
-    const rise = t * 0.16;
-    u.uScroll.value.set(rise % 1, (rise * 2.1) % 1, (rise * 4.3) % 1, (rise * 8.9) % 1);
-    u.uHeight.value = (FLAME_NOMINAL_H / FLAME_H) * (0.55 + 0.45 * this.intensity) * (0.9 + 0.1 * fl2);
-    u.uBright.value = (0.8 + 0.3 * this.intensity) * (0.9 + 0.1 * fl);
+    setFlameUniforms(u, t, this.intensity, fl, fl2, this._widthMul);
+    this._updateClusters(t);
 
-    // share of the particle budget for embers and puffs
-    const share = Math.floor(FIRE_BUDGET / sceneFireCount());
+    // share of the particle budget for embers and puffs (smoldering wisps take theirs first)
+    const share = Math.floor((FIRE_BUDGET - _smolderInUse) / sceneFireCount());
     const nEmber = Math.min(EMBER_N, Math.max(0, Math.round(share * 0.3)));
     const nPuff = Math.min(PUFF_N, Math.max(0, share - nEmber));
     this._eGeo.setDrawRange(0, nEmber);
@@ -696,10 +719,79 @@ export class Fire {
     this._fogGlow.position.y = 0.4 * flameH;
     this._fogGlow.material.opacity = _headFog * (0.35 + 0.2 * this.intensity) * fl;
 
-    const sc = this.baseScale * (0.7 + 0.5 * this.intensity);
+    const sc = Math.min(this._scorchMax, this.baseScale * (0.4 + 0.8 * this.intensity));
     this._scorch.scale.set(sc, 1, sc);
     this._scorch.material.opacity = Math.min(1, t / 4) * (0.7 + 0.3 * this.intensity);
     if (this.sound) this.sound.setVolume(0.5 + 0.5 * this.intensity);
+  }
+
+  /**
+   * Called by FireSpread when this fire sits on a furniture surface. On a big surface (couch,
+   * table) extra flame clusters creep from where it started toward the surface's edges over
+   * ~20 s of growing, instead of one flame in the middle.
+   * @param {{min:{x,z}, max:{x,z}, top:THREE.Vector3}} area  surface footprint (world, axis-aligned)
+   */
+  spreadOver(area) {
+    if (this._clusters.length || this._scorchMax !== Infinity) return;
+    const w = area.max.x - area.min.x, d = area.max.z - area.min.z;
+    // room to the nearest edge from (x, z): caps the scorch so it never hangs off the surface
+    const room = (x, z) => 2 * Math.max(0, Math.min(x - area.min.x, area.max.x - x, z - area.min.z, area.max.z - z)) + 0.1;
+    const p0 = this.group.position;
+    this._scorchMax = Math.max(0.2, room(p0.x, p0.z));
+    const n = Math.min(MAX_CLUSTERS, Math.floor(Math.max(w, d) / 0.45));
+    if (n < 1) return;
+    this._widthMul = 1.35;
+    // candidate spots: inset corners and edge midpoints; pick the n most spread out
+    // (farthest-point sampling from where the fire started)
+    const ix = Math.min(0.15, w / 4), iz = Math.min(0.15, d / 4);
+    const xs = [area.min.x + ix, (area.min.x + area.max.x) / 2, area.max.x - ix];
+    const zs = [area.min.z + iz, (area.min.z + area.max.z) / 2, area.max.z - iz];
+    const cand = [];
+    for (const x of xs) for (const z of zs) cand.push([x, z]);
+    const p = this.group.position;
+    const chosen = [[p.x, p.z]];
+    for (let c = 0; c < n; c++) {
+      let best = null, bestD = 0.3; // skip spots too close to an existing flame
+      for (const q of cand) {
+        let dmin = Infinity;
+        for (const h of chosen) dmin = Math.min(dmin, Math.hypot(q[0] - h[0], q[1] - h[1]));
+        if (dmin > bestD) { bestD = dmin; best = q; }
+      }
+      if (!best) break;
+      chosen.push(best);
+      const mat = flameMaterial(this.baseScale);
+      const mesh = new THREE.Mesh(this._flame.geometry, mat);
+      mesh.frustumCulled = false;
+      mesh.renderOrder = 10;
+      mesh.visible = false;
+      const scorch = new THREE.Mesh(this._scorch.geometry, this._scorch.material);
+      scorch.renderOrder = 1;
+      scorch.rotation.y = Math.random() * Math.PI * 2;
+      scorch.visible = false;
+      this.group.add(mesh, scorch);
+      this._clusters.push({
+        mesh, mat, scorch, start: this._growTime + c * 2.5, // staggered, one after another
+        tx: best[0] - p.x, tz: best[1] - p.z, seed: Math.random() * 50,
+        scorchMax: Math.max(0.2, room(best[0], best[1])),
+      });
+    }
+  }
+
+  _updateClusters(t) {
+    for (const c of this._clusters) {
+      const k = clamp01((this._growTime - c.start) / CLUSTER_CREEP_S);
+      const e = k * k * (3 - 2 * k); // ease in/out
+      c.mesh.visible = c.scorch.visible = k > 0;
+      if (k <= 0) continue;
+      c.mesh.position.set(c.tx * e, 0, c.tz * e);
+      c.scorch.position.set(c.tx * e, 0.004, c.tz * e);
+      const cs = 0.55 + 0.45 * e;
+      c.mesh.scale.setScalar(cs);
+      const ss = Math.min(cs * 0.9, c.scorchMax);
+      c.scorch.scale.set(ss, 1, ss);
+      const fl = flicker(t, c.seed), fl2 = flicker(t * 1.3, c.seed + 17);
+      setFlameUniforms(c.mat.uniforms, t + c.seed, this.intensity * (0.4 + 0.6 * e), fl, fl2, this._widthMul);
+    }
   }
 
   /** Looping crackle from the fire's position. Needs one user tap first (browser rule). */
@@ -739,6 +831,7 @@ export class Fire {
     this._pGeo.dispose(); this._pMat.dispose();
     this._scorch.geometry.dispose(); this._scorch.material.dispose();
     this._halo.material.dispose(); this._fogGlow.material.dispose();
+    for (const c of this._clusters) c.mat.dispose();
     if (this.light) { _lightsUsed--; this.light = null; }
     _fires.delete(this);
     _budgetCheckedAt = -Infinity;
@@ -758,8 +851,8 @@ export class Smoke {
     size = 12,         // meters covered (square)
     minY = 1.1,        // lowest the smoke gets
     headHeight = 1.6,  // standing head height the timing below is measured to
-    timeToHead = 18,   // s for the smoke to reach headHeight with one fire …
-    fastestTimeToHead = 15, // … and with many fires (each extra fire takes 1 s off)
+    timeToHead = 20,   // s for the smoke to reach headHeight from a small fire …
+    fastestTimeToHead = 15, // … and from a big one (summed fire intensity ≥ 1.8)
     depthRange = 0.5,  // head this far above the smoke bottom = depth 1
     layers = 4,
     puffs = 240,
@@ -768,6 +861,8 @@ export class Smoke {
     Object.assign(this, { size, minY, headHeight, timeToHead, fastestTimeToHead, depthRange });
     this.ceilingY = 2.6;
     this.bottom = this.ceilingY;
+    this.darkness = 0.3; // 0–1, follows the summed intensity of all fires
+    this.totalIntensity = 0;
     this.depth = 0;
     this.active = false;
     this._t = 0;
@@ -859,6 +954,7 @@ export class Smoke {
     this._fogLevel = 0;
     this.fog.material.opacity = 0;
     this.fog.visible = false;
+    this.darkness = 0.3;
     _headFog = 0;
   }
 
@@ -880,13 +976,20 @@ export class Smoke {
 
     let depth = 0;
     if (this.group.visible) {
-      const n = Array.isArray(fires) ? fires.length : fires | 0;
-      if (this.active && n > 0) {
-        // fixed time to head height (keeps the drill finishable), a bit faster with more fires
-        const T = Math.max(this.fastestTimeToHead, this.timeToHead - (n - 1));
+      // total fire size = summed intensity (a number is read as that many medium fires)
+      let total = 0;
+      if (Array.isArray(fires)) for (let i = 0; i < fires.length; i++) total += fires[i].intensity ?? 0.5;
+      else total = (fires | 0) * 0.5;
+      this.totalIntensity = total;
+      if (this.active && total > 0) {
+        // time to head height between 20 s (small fire) and 15 s (big fire): always finishable
+        const T = this.timeToHead - (this.timeToHead - this.fastestTimeToHead) * clamp01((total - 0.3) / 1.5);
         const rate = Math.max(0.02, (this.ceilingY - 0.05 - this.headHeight) / T);
         this.bottom = Math.max(this.minY, this.bottom - rate * dt);
       }
+      // darker, denser smoke the bigger the fire, eased so it never pops
+      this.darkness += (clamp01(0.25 + total / 2.4) - this.darkness) * Math.min(1, dt * 0.5);
+      const dk = this.darkness;
       const thick = Math.max(0.05, this.ceilingY - this.bottom);
       const fill = clamp01(thick / Math.max(0.1, this.ceilingY - this.minY));
 
@@ -894,7 +997,9 @@ export class Smoke {
       for (let i = 0; i < L; i++) {
         const m = this._layers[i];
         m.position.y = this.bottom + (i / Math.max(1, L - 1)) * thick * 0.9;
-        m.material.opacity = i === 0 ? 0.4 + 0.45 * fill : 0.2 + 0.3 * fill;
+        m.material.opacity = (i === 0 ? 0.4 + 0.45 * fill : 0.2 + 0.3 * fill) * (0.65 + 0.35 * dk);
+        const v = 0.36 - 0.2 * dk; // light gray haze → near-black smoke
+        m.material.color.setRGB(v, v, v * 1.03, THREE.SRGBColorSpace);
         m.material.map.offset.x += dt * 0.012 * (i % 2 ? 1 : -1);
         m.material.map.offset.y += dt * 0.008;
       }
@@ -909,7 +1014,7 @@ export class Smoke {
         if (pos[i3 + 2] > half) pos[i3 + 2] = -half; else if (pos[i3 + 2] < -half) pos[i3 + 2] = half;
         // u² packs most puffs just above the bottom: a billowy, visible underside
         pos[i3 + 1] = this.bottom + 0.1 + this._vU[i] * this._vU[i] * thick + Math.sin(this._t * 0.5 + i) * 0.05;
-        col[i * 4 + 3] = 0.2 + 0.35 * fill;
+        col[i * 4 + 3] = (0.2 + 0.35 * fill) * (0.6 + 0.4 * dk);
       }
       markDirty(this._vGeo);
 
@@ -1004,7 +1109,9 @@ export class ExitSign {
 }
 
 // ---------------------------------------------------------------------
-// Fire spread (stretch): every 12 s, nearest unburned furniture within 3 m catches fire
+// Fire spread: heat-based. Every unburned furniture surface soaks up heat from every fire
+// (more from bigger and closer fires, most from fires below it). It smolders at 60% and
+// ignites at 100%. Close things catch in seconds, far things later or never.
 // surfaces = room.json surfaces: { label, kind, matrix: [16], polygon | vertices + indices }
 // ---------------------------------------------------------------------
 export const FURNITURE = /table|desk|couch|sofa|bed|chair|shelf|storage|cabinet|screen|lamp|plant/i;
@@ -1024,78 +1131,210 @@ function readPoints(s) {
   return out;
 }
 
-/** Top-center of a room.json surface in world space (x/z centroid, highest y). */
-export function surfaceTop(s) {
+/** World-space top area of a room.json surface: x/z bounds of its top, and the top-center point. */
+export function surfaceArea(s) {
   const m = new THREE.Matrix4();
   if (Array.isArray(s.matrix) && s.matrix.length === 16) m.fromArray(s.matrix);
   const pts = readPoints(s);
-  if (!pts.length) return new THREE.Vector3().setFromMatrixPosition(m);
-  let x = 0, z = 0, maxY = -Infinity;
-  for (const p of pts) {
-    p.applyMatrix4(m);
-    x += p.x;
-    z += p.z;
-    maxY = Math.max(maxY, p.y);
+  if (!pts.length) {
+    const c = new THREE.Vector3().setFromMatrixPosition(m);
+    return { min: { x: c.x, z: c.z }, max: { x: c.x, z: c.z }, top: c };
   }
-  return new THREE.Vector3(x / pts.length, maxY, z / pts.length);
+  let maxY = -Infinity;
+  for (const p of pts) { p.applyMatrix4(m); maxY = Math.max(maxY, p.y); }
+  const min = { x: Infinity, z: Infinity }, max = { x: -Infinity, z: -Infinity };
+  for (const p of pts) {
+    if (p.y < maxY - 0.06) continue; // top face only
+    min.x = Math.min(min.x, p.x); max.x = Math.max(max.x, p.x);
+    min.z = Math.min(min.z, p.z); max.z = Math.max(max.z, p.z);
+  }
+  return { min, max, top: new THREE.Vector3((min.x + max.x) / 2, maxY, (min.z + max.z) / 2) };
 }
 
+/** Top-center of a room.json surface in world space. */
+export function surfaceTop(s) {
+  return surfaceArea(s).top;
+}
+
+const SMOLDER_N = 96;        // wisp particles shared by all smoldering surfaces
+const SMOLDER_AT = 0.6;      // share of the ignition threshold where wisps start
+
 export class FireSpread {
-  constructor({ surfaces = [], interval = 12, maxDist = 3, maxFires = 6, onSpread = null } = {}) {
-    Object.assign(this, { interval, maxDist, maxFires, onSpread });
-    this.timer = 0;
+  /**
+   * @param {object} o
+   * @param {Array} o.surfaces  room.json surfaces (furniture is picked by label)
+   * @param {(pos: THREE.Vector3, surface: object) => void} o.onSpread  create the new Fire here
+   * @param {number} o.maxFires  no new ignitions at or above this many fires
+   * @param {number} o.firstSpreadAt  s into the drill before anything may ignite
+   * @param {number} o.minGap  s between two ignitions
+   * @param {number} o.heatRate  heat gain scale (1 = ignition threshold)
+   * @param {number} o.exitClearance  m around an open exit sign where nothing ignites
+   */
+  constructor({
+    surfaces = [], onSpread = null, maxFires = 6, firstSpreadAt = 10, minGap = 3,
+    heatRate = 0.45, exitClearance = 1.5,
+  } = {}) {
+    Object.assign(this, { onSpread, maxFires, firstSpreadAt, minGap, heatRate, exitClearance });
+    this.time = 0;
+    this._lastIgnite = -Infinity;
+    this._gen = 0;
     this._firePos = [];
+
+    // smoldering wisps (added next to the fires automatically, or add spread.group yourself)
+    this.group = new THREE.Group();
+    this.group.name = 'FireSpreadSmolder';
+    const w = makePoints(SMOLDER_N, puffTexture(), 'normal');
+    this._wGeo = w.geo; this._wPos = w.pos; this._wCol = w.col; this._wSize = w.size;
+    this._wAge = new Float32Array(SMOLDER_N).fill(1e9);
+    this._wLife = new Float32Array(SMOLDER_N).fill(1);
+    this._wTarget = new Int16Array(SMOLDER_N).fill(-1);
+    this._wSeed = new Float32Array(SMOLDER_N).map(() => Math.random() * 50);
+    w.pts.renderOrder = 7;
+    this.group.add(w.pts);
+    this._smoldering = [];
     this.setSurfaces(surfaces);
   }
 
   setSurfaces(surfaces = []) {
+    this._gen++;
     this.targets = surfaces
       .filter((s) => FURNITURE.test(s.label || ''))
-      .map((s) => ({ surface: s, label: s.label, top: surfaceTop(s), burning: false }));
+      .map((s) => ({ surface: s, label: s.label, ...surfaceArea(s), heat: 0, burning: false, protected: false }));
   }
 
   reset() {
-    this.timer = 0;
-    for (const t of this.targets) t.burning = false;
+    this.time = 0;
+    this._lastIgnite = -Infinity;
+    this._gen++;
+    for (const t of this.targets) { t.heat = 0; t.burning = false; }
+    this._wAge.fill(1e9);
+    this._smoldering.length = 0;
+    this._wGeo.setDrawRange(0, 0);
+    _smolderInUse = 0;
   }
 
-  /** @returns {THREE.Vector3|null} where a new fire just started, if any */
-  update(dt, fires = []) {
-    if (!fires.length || !this.targets.length) return null;
+  /**
+   * @param {number} dt
+   * @param {Fire[]} fires
+   * @param {ExitSign[]} [exits]  open (not blocked) exits keep a fire-free zone around them
+   * @returns {THREE.Vector3|null} where a new fire just started, if any
+   */
+  update(dt, fires = [], exits = []) {
+    dt = Math.min(dt, 0.05);
+    this.time += dt;
+    if (!this.group.parent && fires.length && fires[0].group?.parent) fires[0].group.parent.add(this.group);
 
     while (this._firePos.length < fires.length) this._firePos.push(new THREE.Vector3());
+    for (let i = 0; i < fires.length; i++) (fires[i].group ?? fires[i]).getWorldPosition(this._firePos[i]);
+
+    // fires sitting on a surface mark it burning, and big surfaces get creeping flames
     for (let i = 0; i < fires.length; i++) {
-      const obj = fires[i].group ?? fires[i];
-      obj.getWorldPosition(this._firePos[i]);
+      const f = fires[i];
+      if (f._spreadGen === this._gen) continue;
+      f._spreadGen = this._gen;
+      const p = this._firePos[i];
+      for (const t of this.targets) {
+        if (p.x < t.min.x - 0.1 || p.x > t.max.x + 0.1 || p.z < t.min.z - 0.1 || p.z > t.max.z + 0.1) continue;
+        if (Math.abs(p.y - t.top.y) > 0.2) continue;
+        t.burning = true;
+        f.spreadOver?.(t);
+        break;
+      }
     }
 
+    // heat: Σ intensity × bias / (d² + 0.25), d to the surface's nearest point, none beyond 3.5 m
+    let hottest = null;
     for (const t of this.targets) {
+      t.protected = false;
+      for (const s of exits) {
+        if (!s || s.blocked) continue;
+        const sp = s.position;
+        const dx = Math.max(t.min.x - sp.x, 0, sp.x - t.max.x);
+        const dz = Math.max(t.min.z - sp.z, 0, sp.z - t.max.z);
+        if (Math.hypot(dx, dz) < this.exitClearance) { t.protected = true; break; }
+      }
       if (t.burning) continue;
+      let gain = 0, best = 0;
       for (let i = 0; i < fires.length; i++) {
         const p = this._firePos[i];
-        if (Math.hypot(p.x - t.top.x, p.z - t.top.z) < 0.6) { t.burning = true; break; }
+        const qx = Math.min(Math.max(p.x, t.min.x), t.max.x);
+        const qz = Math.min(Math.max(p.z, t.min.z), t.max.z);
+        const dy = t.top.y - p.y;
+        const d = Math.hypot(qx - p.x, dy, qz - p.z);
+        if (d > 3.5) continue;
+        // above the flames heats fastest (up to 3.5x); below the fire heats slower
+        const bias = dy > 0 ? 1 + 2.5 * clamp01(dy / (d + 0.01)) : 0.6 + 0.4 * (1 - clamp01(-dy / (d + 0.01)));
+        const fall = 1 - clamp01((d - 2) / 1.5);
+        const g = (fires[i].intensity ?? 0.5) * bias * fall / (d * d + 0.25);
+        gain += g;
+        if (g > best) { best = g; t._from = i; }
       }
+      t.heat += gain * this.heatRate * dt;
+      if (t.protected) t.heat = Math.min(t.heat, SMOLDER_AT - 0.01); // escape route stays clear
+      if (t.heat >= 1 && (!hottest || t.heat > hottest.heat)) hottest = t;
     }
-    if (fires.length >= this.maxFires) return null;
 
-    this.timer += dt;
-    if (this.timer < this.interval) return null;
-    this.timer = 0;
+    this._updateSmolder(dt);
 
-    let best = null;
-    let bestD = this.maxDist;
-    for (const t of this.targets) {
-      if (t.burning) continue;
-      for (let i = 0; i < fires.length; i++) {
-        const d = this._firePos[i].distanceTo(t.top);
-        if (d < bestD) { bestD = d; best = t; }
-      }
-    }
-    if (!best) return null;
-    best.burning = true;
-    const pos = best.top.clone();
-    pos.y += 0.01;
-    this.onSpread?.(pos, best.surface);
+    if (!hottest || fires.length >= this.maxFires) return null;
+    if (this.time < this.firstSpreadAt || this.time - this._lastIgnite < this.minGap) return null;
+
+    // ignite where the heat comes from: the surface point nearest the hottest fire, a bit inside
+    hottest.burning = true;
+    this._lastIgnite = this.time;
+    const src = this._firePos[hottest._from ?? 0] ?? hottest.top;
+    const pos = new THREE.Vector3(
+      Math.min(Math.max(src.x, hottest.min.x + 0.12), hottest.max.x - 0.12),
+      hottest.top.y + 0.01,
+      Math.min(Math.max(src.z, hottest.min.z + 0.12), hottest.max.z - 0.12),
+    );
+    if (hottest.min.x + 0.12 > hottest.max.x - 0.12) pos.x = hottest.top.x;
+    if (hottest.min.z + 0.12 > hottest.max.z - 0.12) pos.z = hottest.top.z;
+    this.onSpread?.(pos, hottest.surface);
     return pos;
+  }
+
+  // thin gray wisps rising from surfaces past 60% heat: shows what's about to catch
+  _updateSmolder(dt) {
+    const list = this._smoldering;
+    list.length = 0;
+    for (let i = 0; i < this.targets.length; i++) {
+      const t = this.targets[i];
+      if (!t.burning && t.heat >= SMOLDER_AT) list.push(i);
+    }
+    const n = list.length ? SMOLDER_N : 0;
+    _smolderInUse = n;
+    this._wGeo.setDrawRange(0, n);
+    if (!n) return;
+    const p = this._wPos, c = this._wCol, sz = this._wSize;
+    for (let i = 0; i < n; i++) {
+      this._wAge[i] += dt;
+      const ti = this._wTarget[i];
+      const t = ti >= 0 ? this.targets[ti] : null;
+      const expired = t && this._wAge[i] >= this._wLife[i];
+      if (expired || !t || t.burning || t.heat < SMOLDER_AT) {
+        // respawn on one of the smoldering surfaces, at a random spot on its top
+        const nt = this.targets[list[i % list.length]];
+        this._wTarget[i] = list[i % list.length];
+        p[i * 3] = nt.min.x + Math.random() * (nt.max.x - nt.min.x);
+        p[i * 3 + 1] = nt.top.y + 0.02;
+        p[i * 3 + 2] = nt.min.z + Math.random() * (nt.max.z - nt.min.z);
+        this._wLife[i] = 2.5 + Math.random() * 1.5;
+        // a fresh wisp starts at the surface; a reassigned one gets a random phase so they don't rise in lockstep
+        this._wAge[i] = expired ? 0 : Math.random() * this._wLife[i];
+        p[i * 3 + 1] += 0.28 * this._wAge[i];
+      }
+      const tt = this.targets[this._wTarget[i]];
+      const k = this._wAge[i] / this._wLife[i];
+      const strength = clamp01((tt.heat - SMOLDER_AT) / (1 - SMOLDER_AT));
+      const sd = this._wSeed[i];
+      p[i * 3] += Math.sin(this.time * 1.7 + sd) * 0.06 * dt;
+      p[i * 3 + 1] += 0.28 * dt;
+      p[i * 3 + 2] += Math.cos(this.time * 1.3 + sd) * 0.06 * dt;
+      c[i * 4] = c[i * 4 + 1] = c[i * 4 + 2] = 0.5;
+      c[i * 4 + 3] = Math.min(1, k * 5) * (1 - k) * (0.12 + 0.3 * strength);
+      sz[i] = 0.1 + 0.45 * k;
+    }
+    markDirty(this._wGeo);
   }
 }
