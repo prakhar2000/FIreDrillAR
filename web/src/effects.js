@@ -17,7 +17,8 @@ import * as THREE from 'three';
      setAudioListener(camera)   (Smoke does this for you)
 
    Built for Quest passthrough: premultiplied-alpha blending so fire stays bright
-   over the real room. Cheap: ~100 flame + 24 smoke particles per fire.
+   over the real room. Cheap: all fires share a 1,700-particle budget (Smoke adds 240),
+   and only the first 4 fires get a PointLight, so dozens of fires stay under 2,000 particles.
    ===================================================================== */
 
 const FIRE_SOUND_URL = '/sounds/fire.mp3';
@@ -66,6 +67,35 @@ function puffTexture() {
   }));
 }
 
+// Seamless, dense cloud tile for the smoke layers (blobs wrap around the edges)
+let _layerTex = null;
+function smokeLayerTexture() {
+  return (_layerTex ??= canvasTexture(256, 256, (g, s) => {
+    for (let i = 0; i < 46; i++) {
+      const x = Math.random() * s;
+      const y = Math.random() * s;
+      const r = s * (0.12 + Math.random() * 0.16);
+      const a = 0.25 + Math.random() * 0.25;
+      for (let ox = -s; ox <= s; ox += s) {
+        for (let oy = -s; oy <= s; oy += s) {
+          const gr = g.createRadialGradient(x + ox, y + oy, 0, x + ox, y + oy, r);
+          gr.addColorStop(0, `rgba(255,255,255,${a})`);
+          gr.addColorStop(1, 'rgba(255,255,255,0)');
+          g.fillStyle = gr;
+          g.fillRect(0, 0, s, s);
+        }
+      }
+    }
+  }));
+}
+
+// Largest bold Arial size (≤ px) at which text fits in maxW
+function fitFont(g, text, px, maxW) {
+  g.font = `bold ${px}px Arial, Helvetica, sans-serif`;
+  const w = g.measureText(text).width;
+  if (w > maxW) g.font = `bold ${Math.floor((px * maxW) / w)}px Arial, Helvetica, sans-serif`;
+}
+
 function signTexture(blocked) {
   const key = blocked ? 'blocked' : 'exit';
   return (_signTex[key] ??= canvasTexture(512, 256, (g, w, h) => {
@@ -82,13 +112,14 @@ function signTexture(blocked) {
     g.fillStyle = '#fff';
     g.textAlign = 'center';
     g.textBaseline = 'middle';
+    const maxW = w - 110;
     if (blocked) {
-      g.font = 'bold 92px Arial, Helvetica, sans-serif';
-      g.fillText('BLOCKED', w / 2, h / 2 - 18);
-      g.font = 'bold 34px Arial, Helvetica, sans-serif';
-      g.fillText('DO NOT USE', w / 2, h / 2 + 52);
+      fitFont(g, 'BLOCKED', 100, maxW);
+      g.fillText('BLOCKED', w / 2, h / 2 - 20);
+      fitFont(g, 'DO NOT USE', 46, maxW);
+      g.fillText('DO NOT USE', w / 2, h / 2 + 54);
     } else {
-      g.font = 'bold 132px Arial, Helvetica, sans-serif';
+      fitFont(g, 'EXIT', 140, maxW);
       g.fillText('EXIT', w / 2, h / 2 + 6);
     }
   }, true));
@@ -219,7 +250,30 @@ function loadFireBuffer() {
 // Fire
 // ---------------------------------------------------------------------
 const FLAME_N = 100;
-const PUFF_N = 24;
+const PUFF_N = 32;
+
+// All fires share one particle budget (+ Smoke's 240 puffs keeps the scene under 2,000).
+// With many fires each draws fewer, brighter particles instead of the frame rate collapsing.
+const FIRE_BUDGET = 1700;
+// Every PointLight adds cost to every lit pixel, so only the first few fires get one.
+const MAX_FIRE_LIGHTS = 4;
+const _fires = new Set();
+let _sceneFires = 1;
+let _countAcc = 0;
+let _budgetCheckedAt = -Infinity;
+let _lightsUsed = 0;
+const _countIfInScene = (f) => { if (f.group.parent) _countAcc++; };
+
+function sceneFireCount() {
+  const now = performance.now();
+  if (now - _budgetCheckedAt > 250) {
+    _budgetCheckedAt = now;
+    _countAcc = 0;
+    _fires.forEach(_countIfInScene);
+    _sceneFires = Math.max(1, _countAcc);
+  }
+  return _sceneFires;
+}
 
 export class Fire {
   /**
@@ -235,6 +289,8 @@ export class Fire {
     this.age = 0;
     this.sound = null;
     this._wantSound = false;
+    _fires.add(this);
+    _budgetCheckedAt = -Infinity; // recount on the next update
 
     // flames
     const f = makePoints(FLAME_N, glowTexture(), 'additive');
@@ -266,20 +322,23 @@ export class Fire {
 
     // glow at the base
     const glowMat = new THREE.SpriteMaterial({
-      map: glowTexture(), color: 0xff6a14, transparent: true, opacity: 0.55,
+      map: glowTexture(), color: 0xff5a10, transparent: true, opacity: 0.35,
       depthWrite: false,
     });
     setBlend(glowMat, 'additive');
     glowMat.blendSrc = THREE.SrcAlphaFactor; // the sprite shader doesn't premultiply, so weight rgb by alpha here
     this._glow = new THREE.Sprite(glowMat);
-    this._glow.position.y = 0.12;
     this._glow.renderOrder = 9;
     this.group.add(this._glow);
 
-    // flickering light
-    this.light = new THREE.PointLight(0xff6a1a, 2, 4, 2);
-    this.light.position.y = 0.35;
-    this.group.add(this.light);
+    // flickering light (first MAX_FIRE_LIGHTS fires only)
+    this.light = null;
+    if (_lightsUsed < MAX_FIRE_LIGHTS) {
+      _lightsUsed++;
+      this.light = new THREE.PointLight(0xff6a1a, 2, 4, 2);
+      this.light.position.y = 0.35;
+      this.group.add(this.light);
+    }
 
     this.update(0, false);
   }
@@ -290,23 +349,23 @@ export class Fire {
     const a = Math.random() * Math.PI * 2;
     const p = this._fPos, v = this._fVel;
     p[i * 3] = Math.cos(a) * r;
-    p[i * 3 + 1] = 0.02;
+    p[i * 3 + 1] = 0.05;
     p[i * 3 + 2] = Math.sin(a) * r;
     v[i * 3] = (Math.random() - 0.5) * 0.1;
-    v[i * 3 + 1] = (0.5 + Math.random() * 0.6) * s;
+    v[i * 3 + 1] = (0.55 + Math.random() * 0.75) * s;
     v[i * 3 + 2] = (Math.random() - 0.5) * 0.1;
-    this._fLife[i] = 0.5 + Math.random() * 0.6;
+    this._fLife[i] = 0.55 + Math.random() * 0.7;
     this._fAge[i] = 0;
   }
 
   _respawnPuff(i) {
     const s = this.baseScale * (0.65 + 0.45 * this.intensity);
-    this._pPos[i * 3] = (Math.random() - 0.5) * 0.15 * s;
-    this._pPos[i * 3 + 1] = 0.35 * s;
-    this._pPos[i * 3 + 2] = (Math.random() - 0.5) * 0.15 * s;
-    this._pDrift[i * 2] = (Math.random() - 0.5) * 0.12;
-    this._pDrift[i * 2 + 1] = (Math.random() - 0.5) * 0.12;
-    this._pLife[i] = 2.2 + Math.random() * 1.6;
+    this._pPos[i * 3] = (Math.random() - 0.5) * 0.2 * s;
+    this._pPos[i * 3 + 1] = 0.3 * s;
+    this._pPos[i * 3 + 2] = (Math.random() - 0.5) * 0.2 * s;
+    this._pDrift[i * 2] = (Math.random() - 0.5) * 0.2;
+    this._pDrift[i * 2 + 1] = (Math.random() - 0.5) * 0.2;
+    this._pLife[i] = 3.2 + Math.random() * 1.8; // long enough to reach the ceiling smoke
     this._pAge[i] = 0;
   }
 
@@ -321,45 +380,62 @@ export class Fire {
     const s = this.baseScale * (0.65 + 0.45 * this.intensity);
     const t = this.age;
 
-    // flames: rise, pull into a cone, sway; yellow → orange → dark red
+    // share of the particle budget; fewer particles → each one a bit bigger and brighter
+    const share = Math.floor(FIRE_BUDGET / sceneFireCount());
+    const nFlame = Math.min(FLAME_N, Math.max(1, Math.round(share * 0.76)));
+    const nPuff = Math.min(PUFF_N, Math.max(0, share - nFlame));
+    this._fGeo.setDrawRange(0, nFlame);
+    this._pGeo.setDrawRange(0, nPuff);
+    const boost = Math.min(2.2, Math.sqrt(FLAME_N / nFlame));
+
+    // flames: rise, pull into a cone, sway. Yellow-orange → orange → dark red.
+    // Low per-particle alpha so overlaps stay orange instead of burning out to white,
+    // and fade in from 0 so the base doesn't show a hard cut where it meets the table.
     const p = this._fPos, v = this._fVel, c = this._fCol, sz = this._fSize;
-    for (let i = 0; i < FLAME_N; i++) {
+    const flameA = 0.42 * boost * (0.8 + 0.3 * this.intensity);
+    const flameS = s * (0.85 + 0.15 * boost);
+    for (let i = 0; i < nFlame; i++) {
       this._fAge[i] += dt;
       if (this._fAge[i] >= this._fLife[i]) this._respawnFlame(i);
       const k = this._fAge[i] / this._fLife[i];
+      const k1 = 1 - k;
       const i3 = i * 3, i4 = i * 4;
       const sway = Math.sin(t * 6 + this._fSeed[i]) * 0.06;
-      p[i3] += (v[i3] + sway) * dt - p[i3] * dt * 1.6;
+      p[i3] += (v[i3] + sway) * dt - p[i3] * dt * 1.8;
       p[i3 + 1] += v[i3 + 1] * dt;
-      p[i3 + 2] += v[i3 + 2] * dt - p[i3 + 2] * dt * 1.6;
-      c[i4] = 1.0;
-      c[i4 + 1] = Math.max(0.12, 0.88 - 0.75 * k);
-      c[i4 + 2] = Math.max(0, 0.5 - 1.4 * k);
-      c[i4 + 3] = Math.pow(Math.sin(Math.PI * k), 0.8) * 0.9;
-      sz[i] = (0.3 - 0.19 * k) * s;
+      p[i3 + 2] += v[i3 + 2] * dt - p[i3 + 2] * dt * 1.8;
+      c[i4] = 1.0 - 0.45 * k * k;
+      c[i4 + 1] = 0.08 + 0.62 * k1 * k1;
+      c[i4 + 2] = 0.22 * k1 * k1 * k1 * k1;
+      c[i4 + 3] = Math.min(1, k * 5) * Math.pow(k1, 1.2) * flameA;
+      sz[i] = (0.3 - 0.17 * k) * flameS;
     }
     markDirty(this._fGeo);
 
-    // smoke puffs: rise slowly, grow, fade
+    // smoke puffs: dark column rising off the flames toward the ceiling, growing and fading
     const pp = this._pPos, pc = this._pCol, ps = this._pSize;
-    for (let i = 0; i < PUFF_N; i++) {
+    const puffA = 0.5 * (0.6 + 0.4 * this.intensity) * Math.min(1.8, Math.sqrt(PUFF_N / Math.max(1, nPuff)));
+    for (let i = 0; i < nPuff; i++) {
       this._pAge[i] += dt;
       if (this._pAge[i] >= this._pLife[i]) this._respawnPuff(i);
       const k = this._pAge[i] / this._pLife[i];
       const i3 = i * 3, i4 = i * 4;
       pp[i3] += this._pDrift[i * 2] * dt;
-      pp[i3 + 1] += 0.45 * s * dt;
+      pp[i3 + 1] += 0.5 * s * dt;
       pp[i3 + 2] += this._pDrift[i * 2 + 1] * dt;
-      pc[i4] = pc[i4 + 1] = pc[i4 + 2] = 0.22;
-      pc[i4 + 3] = Math.sin(Math.PI * k) * 0.45 * (0.5 + 0.5 * this.intensity);
-      ps[i] = (0.25 + 0.6 * k) * s;
+      pc[i4] = pc[i4 + 1] = pc[i4 + 2] = 0.16;
+      pc[i4 + 3] = Math.min(1, k * 4) * (1 - k) * puffA;
+      ps[i] = (0.3 + 0.9 * k) * s;
     }
     markDirty(this._pGeo);
 
     const flick = 0.75 + Math.random() * 0.35 + 0.15 * Math.sin(t * 17);
-    this.light.intensity = 2.4 * this.intensity * flick;
-    this._glow.scale.setScalar(0.75 * s * (0.9 + 0.1 * Math.sin(t * 11)));
-    this._glow.material.opacity = 0.45 + 0.15 * flick;
+    if (this.light) this.light.intensity = 2.4 * this.intensity * flick;
+    // glow sits above the surface so the table/floor doesn't slice it into a half-disc
+    const g = 0.7 * s * (0.9 + 0.1 * Math.sin(t * 11));
+    this._glow.scale.setScalar(g);
+    this._glow.position.y = 0.42 * g;
+    this._glow.material.opacity = 0.3 + 0.1 * flick;
     if (this.sound) this.sound.setVolume(0.5 + 0.5 * this.intensity);
   }
 
@@ -398,6 +474,9 @@ export class Fire {
     this._fGeo.dispose(); this._fMat.dispose();
     this._pGeo.dispose(); this._pMat.dispose();
     this._glow.material.dispose();
+    if (this.light) { _lightsUsed--; this.light = null; }
+    _fires.delete(this);
+    _budgetCheckedAt = -Infinity;
     this.group.removeFromParent();
   }
 }
@@ -413,13 +492,15 @@ export class Smoke {
   constructor(scene, camera, {
     size = 12,         // meters covered (square)
     minY = 1.1,        // lowest the smoke gets
-    dropRate = 0.06,   // m/s with one fire; more fires drop faster
+    headHeight = 1.6,  // standing head height the timing below is measured to
+    timeToHead = 18,   // s for the smoke to reach headHeight with one fire …
+    fastestTimeToHead = 15, // … and with many fires (each extra fire takes 1 s off)
     depthRange = 0.5,  // head this far above the smoke bottom = depth 1
     layers = 4,
-    puffs = 120,
+    puffs = 240,
     color = 0x3a3a3c,
   } = {}) {
-    Object.assign(this, { size, minY, dropRate, depthRange });
+    Object.assign(this, { size, minY, headHeight, timeToHead, fastestTimeToHead, depthRange });
     this.ceilingY = 2.6;
     this.bottom = this.ceilingY;
     this.depth = 0;
@@ -431,12 +512,13 @@ export class Smoke {
     this.group.visible = false;
     scene?.add(this.group);
 
-    // flat cloud layers
+    // flat cloud layers (dense seamless tile, so the underside reads as a solid smoke ceiling)
     const base = puffTexture();
+    const layerTex = smokeLayerTexture();
     this._layers = [];
     const geo = new THREE.PlaneGeometry(size, size).rotateX(-Math.PI / 2);
     for (let i = 0; i < layers; i++) {
-      const map = base.clone();
+      const map = layerTex.clone();
       map.wrapS = map.wrapT = THREE.RepeatWrapping;
       map.repeat.set(size / 2.2, size / 2.2);
       map.offset.set(Math.random(), Math.random());
@@ -462,10 +544,11 @@ export class Smoke {
       this._vU[i] = Math.random();
       this._vVel[i * 2] = (Math.random() - 0.5) * 0.08;
       this._vVel[i * 2 + 1] = (Math.random() - 0.5) * 0.08;
-      this._vSize[i] = 1.1 + Math.random() * 0.9;
-      this._vCol[i * 4] = grey.r * 1.15;
-      this._vCol[i * 4 + 1] = grey.g * 1.15;
-      this._vCol[i * 4 + 2] = grey.b * 1.15;
+      this._vSize[i] = 1.2 + Math.random() * 1.2;
+      const shade = 0.8 + Math.random() * 0.45; // some puffs darker, some lighter: billowy, not flat
+      this._vCol[i * 4] = grey.r * shade;
+      this._vCol[i * 4 + 1] = grey.g * shade;
+      this._vCol[i * 4 + 2] = grey.b * shade;
     }
     p.pts.renderOrder = 6;
     this.group.add(p.pts);
@@ -533,7 +616,9 @@ export class Smoke {
     if (this.group.visible) {
       const n = Array.isArray(fires) ? fires.length : fires | 0;
       if (this.active && n > 0) {
-        const rate = this.dropRate * Math.min(2, 0.6 + 0.4 * n);
+        // fixed time to head height (keeps the drill finishable), a bit faster with more fires
+        const T = Math.max(this.fastestTimeToHead, this.timeToHead - (n - 1));
+        const rate = Math.max(0.02, (this.ceilingY - 0.05 - this.headHeight) / T);
         this.bottom = Math.max(this.minY, this.bottom - rate * dt);
       }
       const thick = Math.max(0.05, this.ceilingY - this.bottom);
@@ -543,7 +628,7 @@ export class Smoke {
       for (let i = 0; i < L; i++) {
         const m = this._layers[i];
         m.position.y = this.bottom + (i / Math.max(1, L - 1)) * thick * 0.9;
-        m.material.opacity = (0.12 + 0.3 * fill) * (i === 0 ? 1.3 : 0.8);
+        m.material.opacity = i === 0 ? 0.4 + 0.45 * fill : 0.2 + 0.3 * fill;
         m.material.map.offset.x += dt * 0.012 * (i % 2 ? 1 : -1);
         m.material.map.offset.y += dt * 0.008;
       }
@@ -556,8 +641,9 @@ export class Smoke {
         pos[i3 + 2] += this._vVel[i * 2 + 1] * dt;
         if (pos[i3] > half) pos[i3] = -half; else if (pos[i3] < -half) pos[i3] = half;
         if (pos[i3 + 2] > half) pos[i3 + 2] = -half; else if (pos[i3 + 2] < -half) pos[i3 + 2] = half;
-        pos[i3 + 1] = this.bottom + 0.15 + this._vU[i] * thick + Math.sin(this._t * 0.5 + i) * 0.05;
-        col[i * 4 + 3] = 0.1 + 0.3 * fill;
+        // u² packs most puffs just above the bottom: a billowy, visible underside
+        pos[i3 + 1] = this.bottom + 0.1 + this._vU[i] * this._vU[i] * thick + Math.sin(this._t * 0.5 + i) * 0.05;
+        col[i * 4 + 3] = 0.2 + 0.35 * fill;
       }
       markDirty(this._vGeo);
 
@@ -576,8 +662,10 @@ export class Smoke {
 // ---------------------------------------------------------------------
 // Exit / blocked sign: text sprite at ~1.9 m, always faces the viewer
 // ---------------------------------------------------------------------
-const SIGN_W = 0.62;
-const SIGN_H = 0.31;
+// ~0.23 m tall EXIT letters: readable from 3 m on a laptop and in the headset
+const SIGN_W = 0.9;
+const SIGN_H = 0.45;
+const RING_Y = 0.025; // just above the floor, so the ring doesn't z-fight with it
 
 export class ExitSign {
   /**
@@ -586,7 +674,9 @@ export class ExitSign {
    */
   constructor(position, blocked = false) {
     this.sprite = new THREE.Sprite(new THREE.SpriteMaterial({
-      transparent: true, depthWrite: false, toneMapped: false,
+      // depthTest off: the billboard tilts toward the viewer and would otherwise sink
+      // halfway into the door/wall it's placed on. The head fog (renderOrder 999) still covers it.
+      transparent: true, depthWrite: false, depthTest: false, toneMapped: false,
     }));
     this.sprite.name = 'ExitSign';
     this.sprite.scale.set(SIGN_W, SIGN_H, 1);
@@ -600,7 +690,10 @@ export class ExitSign {
     // scale compensated because sprite scale applies to children)
     this._ring = new THREE.Mesh(
       new THREE.RingGeometry(0.35, 0.47, 48).rotateX(-Math.PI / 2),
-      new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, toneMapped: false }),
+      new THREE.MeshBasicMaterial({
+        transparent: true, depthWrite: false, toneMapped: false,
+        polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4,
+      }),
     );
     this.sprite.add(this._ring);
 
@@ -620,7 +713,7 @@ export class ExitSign {
     this._t += dt;
     const t = this._t;
     const sx = this.sprite.scale.x, sy = this.sprite.scale.y;
-    this._ring.position.y = (0.01 - this.position.y) / sy;
+    this._ring.position.y = (RING_Y - this.position.y) / sy;
     let ringScale;
     if (this.blocked) {
       ringScale = 1;
