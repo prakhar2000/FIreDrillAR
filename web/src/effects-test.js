@@ -163,6 +163,7 @@ addEventListener('keydown', (e) => {
   if (e.code === 'KeyR') resetAll();
   if (e.code === 'KeyH') fire.debugHeat = !fire.debugHeat;
   if (e.code === 'KeyF') timeScale = timeScale === 1 ? 4 : 1;
+  if (e.code === 'KeyV') fire.flipbook = !fire.flipbook;
 });
 addEventListener('keyup', (e) => { keys[e.code] = false; });
 

@@ -29,7 +29,8 @@ import * as THREE from 'three';
    Burning bits drop from tabletops and can light the floor below.
 
    Rendering (built for Quest passthrough, premultiplied alpha):
-     flames   one instanced draw: a noise-shader flame tongue per burning cell (≤ maxFlames)
+     flames   one instanced draw: a flame tongue per burning cell (≤ maxFlames), playing the
+              Unity Labs flipbook (textures/flames.png, CC0) or, without it, a noise-shader flame
      surfaces per-face overlay: char spreading over the real surface, glowing ember cracks,
               a hot front ahead of the flames
      embers, falling burning bits, smoke rising off the flames (≤ 400 particles, + Smoke's 240)
@@ -969,26 +970,67 @@ export class FireSim {
 const EMBER_N = 160;
 const SMOKE_N = 240;
 
+// ---------------------------------------------------------------------
+// Flame flipbook: web/public/textures/flames.png = Unity Labs "Flame03" (CC0, credited in the
+// README), 16 x 4 frames of a looping flame. Each tongue plays it at its own speed, start frame
+// and mirroring. If it can't load, the procedural noise flame is drawn instead.
+// ---------------------------------------------------------------------
+const FLIPBOOK_URL = '/textures/flames.png';
+const FLIPBOOK_GRID = [16, 4];
+const FLIPBOOK_FPS = 24;
+let _sheet = null;
+let _sheetReady = false;
+const _sheetWaiters = new Set();
+
+function flipbookTexture() {
+  if (_sheet || typeof document === 'undefined') return _sheet;
+  _sheet = new THREE.TextureLoader().load(
+    FLIPBOOK_URL,
+    () => { _sheetReady = true; _sheetWaiters.forEach((f) => f()); _sheetWaiters.clear(); },
+    undefined,
+    () => { _sheetWaiters.clear(); }, // missing file: stay procedural
+  );
+  _sheet.minFilter = _sheet.magFilter = THREE.LinearFilter;
+  _sheet.generateMipmaps = false;
+  return _sheet;
+}
+
 function flameMaterial() {
   const mat = new THREE.ShaderMaterial({
-    uniforms: { uNoise: { value: noiseTexture() }, uTime: { value: 0 }, uScroll: { value: new THREE.Vector3() } },
+    uniforms: {
+      uNoise: { value: noiseTexture() }, uTime: { value: 0 }, uScroll: { value: new THREE.Vector3() },
+      uSheet: { value: flipbookTexture() }, uSheetOn: { value: 0 },
+    },
     vertexShader: /* glsl */ `
       attribute vec2 aQuad;    // x: -1..1 across, y: 0..1 up
       attribute vec4 iPos;     // flame base (world), w: seed
       attribute vec4 iShape;   // x: width, y: height, z: burn 0–1, w: unused
       uniform float uTime;
+      uniform float uSheetOn;
       varying vec2 vUv;
       varying float vSeed;
       varying float vBurn;
+      varying vec3 vFrame;     // flipbook: frame, next frame, blend
+      varying float vMirror;
+      varying float vSheet;
       void main() {
+        vSheet = uSheetOn;
         vec3 base = iPos.xyz;
+        // flipbook timing per tongue (highp here, so mediump fragments never see big numbers)
+        float speed = 0.75 + 0.5 * fract(iPos.w * 7.13);
+        float f = iPos.w * 64.0 + uTime * ${FLIPBOOK_FPS.toFixed(1)} * speed;
+        float f0 = mod(floor(f), 64.0);
+        vFrame = vec3(f0, mod(f0 + 1.0, 64.0), fract(f));
+        vMirror = fract(iPos.w * 3.71) < 0.5 ? -1.0 : 1.0;
         vec2 d = normalize(cameraPosition.xz - base.xz + vec2(1e-4, 0.0));
         vec3 side = vec3(-d.y, 0.0, d.x);
         float s = iPos.w * 6.2832;
         // each tongue breathes on its own; tips sway, the base stays put
         float h = iShape.y * (0.86 + 0.1 * sin(uTime * 2.3 + s) + 0.06 * sin(uTime * 5.7 + s * 3.1));
         float sway = (sin(uTime * 1.9 + s) + 0.6 * sin(uTime * 3.3 + s * 2.7)) * 0.07 * h * aQuad.y * aQuad.y;
-        vec3 w = base + side * (aQuad.x * 0.5 * iShape.x + sway) + vec3(0.0, aQuad.y * h, 0.0);
+        // the flipbook flame fills about half its frame's width: widen the quad to match
+        float wq = iShape.x * mix(1.0, 1.7, uSheetOn);
+        vec3 w = base + side * (aQuad.x * 0.5 * wq + sway * (1.0 - 0.7 * uSheetOn)) + vec3(0.0, aQuad.y * h, 0.0);
         vUv = aQuad;
         vSeed = iPos.w;
         vBurn = iShape.z;
@@ -998,12 +1040,34 @@ function flameMaterial() {
       precision mediump float;
       uniform sampler2D uNoise;
       uniform vec3 uScroll;   // per-octave upward noise scroll, wrapped to 0–1 on the CPU (mediump-safe)
+      uniform sampler2D uSheet;
+      varying float vSheet;    // uSheetOn, via the vertex shader (uniform precisions must match)
       varying vec2 vUv;
       varying float vSeed;
       varying float vBurn;
+      varying vec3 vFrame;
+      varying float vMirror;
       float nz(vec2 p) { return texture2D(uNoise, p).r; }
+      vec3 frame(float k, vec2 q) {
+        float col = mod(k, ${FLIPBOOK_GRID[0].toFixed(1)}), row = floor(k / ${FLIPBOOK_GRID[0].toFixed(1)});
+        return texture2D(uSheet, vec2((col + q.x) / ${FLIPBOOK_GRID[0].toFixed(1)}, 1.0 - (row + 1.0 - q.y) / ${FLIPBOOK_GRID[1].toFixed(1)})).rgb;
+      }
       void main() {
         float x = vUv.x, y = vUv.y;
+        if (vSheet > 0.5) {
+          // frame-local coords: flame base sits ~3% above the frame bottom; blend to the next frame
+          vec2 q = vec2(0.5 + 0.5 * x * vMirror, 0.03 + 0.95 * y);
+          vec3 sc = mix(frame(vFrame.x, q), frame(vFrame.y, q), vFrame.z);
+          sc.g = min(sc.g, sc.r); // never green-dominant
+          float hm = max(sc.r, max(sc.g, sc.b));
+          float fa = smoothstep(0.02, 0.45, hm) * smoothstep(0.0, 0.06, y) * (1.0 - smoothstep(0.9, 1.0, y));
+          fa *= 0.55 + 0.45 * vBurn;
+          if (fa < 0.004) discard;
+          // same blending as the procedural flame: bright cores "over", dim edges additive
+          vec3 fc = sc / max(hm, 0.001) * mix(0.75, 1.0, vBurn);
+          gl_FragColor = vec4(fc * fa, fa * mix(0.1, 0.85, smoothstep(0.25, 0.75, hm)));
+          return;
+        }
         // noise rising through the flame
         vec2 p = vec2(x * 0.09 + vSeed * 3.7, y * 0.16 + vSeed);
         float n = 0.6 * nz(p - vec2(0.0, uScroll.x)) + 0.3 * nz(p * 2.3 + vec2(0.37, -uScroll.y)) + 0.1 * nz(p * 5.1 + vec2(0.71, -uScroll.z));
@@ -1119,8 +1183,9 @@ export class FireSystem {
    * @param {number} [o.speed]      1 = demo pace: a table burns fully in ~20 s, neighbours catch at ~30–40 s
    * @param {number} [o.maxFlames]  flame tongues drawn at most (lower if the Quest drops frames)
    * @param {number} [o.exitClearance]  m around an open exit where nothing ignites
+   * @param {boolean} [o.flipbook]  flame look: flipbook sheet (default) or procedural noise flames
    */
-  constructor(scene = null, { surfaces = null, speed = 1, maxFlames = 300, exitClearance = 1.5 } = {}) {
+  constructor(scene = null, { surfaces = null, speed = 1, maxFlames = 300, exitClearance = 1.5, flipbook = true } = {}) {
     this.sim = new FireSim({ speed, exitClearance });
     this.maxFlames = maxFlames;
     this.time = 0;
@@ -1141,6 +1206,10 @@ export class FireSystem {
     // flames
     const fl = flameMesh(maxFlames * 2);
     this._flames = fl;
+    this._useFlipbook = flipbook;
+    const on = () => { fl.mesh.material.uniforms.uSheetOn.value = this._useFlipbook ? 1 : 0; };
+    if (_sheetReady) on(); else _sheetWaiters.add(on);
+    this._sheetOn = on;
     fl.mesh.onBeforeRender = (r, s, cam) => { cam.getWorldPosition(this._camPos); };
     this.group.add(fl.mesh);
 
@@ -1175,6 +1244,10 @@ export class FireSystem {
     this._rebuildSurfaces();
     if (surfaces) this.setSurfaces(surfaces);
   }
+
+  /** Flame look: true = Unity Labs flipbook (once loaded), false = procedural noise flames */
+  get flipbook() { return this._useFlipbook; }
+  set flipbook(v) { this._useFlipbook = !!v; if (_sheetReady) this._sheetOn(); }
 
   get hotspots() { return this.sim.hotspots; }
   get totalIntensity() { return this.sim.totalIntensity; }
