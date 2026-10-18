@@ -22,10 +22,13 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
      fire.hotspots                    ≤ 8 × { position, intensity 0–1 } for heat / sound / smoke
      fire.totalIntensity              summed fire size (≈1 per fully burning table)
      fire.reset() · fire.startSound() · fire.stopSound() · fire.setSurfaces(surfaces)
+     fire.setFuelMesh(scanMesh)       an unlabeled scan mesh as fuel (floor, flat furniture, walls)
      smoke.update(dt, headY, fire)    Smoke also takes the FireSystem directly
 
    `new Fire(pos)` ignites the shared default FireSystem (fireSystem()), which loads
-   /api/room for its fuel if nobody calls setSurfaces(). All Fire objects share it.
+   /api/room for its fuel if nobody calls setSurfaces(); without a room.json it burns the biggest
+   mesh in the scene (the room scan). All Fire objects share it. Every ExitSign in a scene keeps
+   fire away unless setExits() names the exits.
 
    How it burns: every fuel surface (tables, couches, … plus the floor as carpet and the walls)
    is split into ~0.2–0.5 m cells holding heat, fuel and flame. A cell heats up from burning
@@ -626,6 +629,134 @@ function buildFuel(surfaces, piles) {
     f.bb = bb;
   }
   return c;
+}
+
+// ---------------------------------------------------------------------
+// Fuel from an unlabeled scan mesh (the room OBJ): reads its triangles, no labels needed.
+//   floor     = the most common lowest flat height
+//   furniture = flat patches 0.25–1.4 m above the floor (under 0.6 m: a couch-like box down to the
+//               floor; higher: a table top with an apron)
+//   walls     = sides of the floor's footprint where the scan has vertical surfaces
+//   ceiling   = the scan's top, at least 2.4 m above the floor (scans often stop short of it)
+// Returns room.json-style surfaces in world space (identity matrices).
+// ---------------------------------------------------------------------
+export function surfacesFromMesh(root, { cell = 0.2 } = {}) {
+  root.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(root);
+  if (box.isEmpty()) return [];
+  const x0 = box.min.x, z0 = box.min.z;
+  const nx = Math.max(1, Math.ceil((box.max.x - x0) / cell)), nz = Math.max(1, Math.ceil((box.max.z - z0) / cell));
+  const low = new Float32Array(nx * nz).fill(Infinity);
+  const flat = [];  // horizontal triangles: [minI, maxI, minJ, maxJ, y]
+  const vert = [];  // vertical triangles: [x, z, area]
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), n = new THREE.Vector3(), e = new THREE.Vector3();
+  const ci = (x) => Math.min(nx - 1, Math.max(0, Math.floor((x - x0) / cell)));
+  const cj = (z) => Math.min(nz - 1, Math.max(0, Math.floor((z - z0) / cell)));
+  root.traverse((o) => {
+    if (!o.isMesh || !o.geometry?.attributes?.position) return;
+    const pos = o.geometry.attributes.position, idx = o.geometry.index, m = o.matrixWorld;
+    const count = idx ? idx.count : pos.count;
+    for (let t = 0; t + 2 < count; t += 3) {
+      const ia = idx ? idx.getX(t) : t, ib = idx ? idx.getX(t + 1) : t + 1, ic = idx ? idx.getX(t + 2) : t + 2;
+      a.fromBufferAttribute(pos, ia).applyMatrix4(m);
+      b.fromBufferAttribute(pos, ib).applyMatrix4(m);
+      c.fromBufferAttribute(pos, ic).applyMatrix4(m);
+      n.subVectors(b, a).cross(e.subVectors(c, a));
+      const len = n.length();
+      if (len < 1e-9) continue;
+      const ny = Math.abs(n.y) / len;
+      if (ny > 0.85) {
+        const y = (a.y + b.y + c.y) / 3;
+        const i0 = ci(Math.min(a.x, b.x, c.x)), i1 = ci(Math.max(a.x, b.x, c.x));
+        const j0 = cj(Math.min(a.z, b.z, c.z)), j1 = cj(Math.max(a.z, b.z, c.z));
+        flat.push(i0, i1, j0, j1, y);
+        for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) if (y < low[j * nx + i]) low[j * nx + i] = y;
+      } else if (ny < 0.25) {
+        vert.push((a.x + b.x + c.x) / 3, (a.z + b.z + c.z) / 3, len / 2);
+      }
+    }
+  });
+  // floor = the most common lowest height (2 cm bins)
+  const hist = new Map();
+  for (const v of low) if (v !== Infinity) { const k = Math.round(v / 0.02); hist.set(k, (hist.get(k) || 0) + 1); }
+  if (!hist.size) return [];
+  let floorK = 0, best = -1;
+  for (const [k, v] of hist) if (v > best) { best = v; floorK = k; }
+  const floorY = floorK * 0.02;
+  const isFloor = new Uint8Array(nx * nz);
+  for (let k = 0; k < nx * nz; k++) isFloor[k] = Math.abs(low[k] - floorY) < 0.1 ? 1 : 0;
+  // furniture tops: highest flat surface per cell between 0.25 and 1.4 m above the floor
+  const topY = new Float32Array(nx * nz).fill(-Infinity);
+  for (let t = 0; t < flat.length; t += 5) {
+    const y = flat[t + 4];
+    if (y < floorY + 0.25 || y > floorY + 1.4) continue;
+    for (let j = flat[t + 2]; j <= flat[t + 3]; j++) for (let i = flat[t]; i <= flat[t + 1]; i++) {
+      if (y > topY[j * nx + i]) topY[j * nx + i] = y;
+    }
+  }
+  const surfaces = [];
+  const seen = new Uint8Array(nx * nz);
+  for (let k = 0; k < nx * nz; k++) {
+    if (seen[k] || topY[k] === -Infinity) continue;
+    // flood fill a patch of similar height
+    const stack = [k], cells = [];
+    seen[k] = 1;
+    while (stack.length) {
+      const q = stack.pop(); cells.push(q);
+      const i = q % nx, j = (q / nx) | 0;
+      for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const ii = i + di, jj = j + dj;
+        if (ii < 0 || jj < 0 || ii >= nx || jj >= nz) continue;
+        const r = jj * nx + ii;
+        if (!seen[r] && topY[r] !== -Infinity && Math.abs(topY[r] - topY[q]) < 0.12) { seen[r] = 1; stack.push(r); }
+      }
+    }
+    if (cells.length < 4 || cells.length * cell * cell > 8) continue; // specks, or not furniture
+    let i0 = nx, i1 = 0, j0 = nz, j1 = 0, ySum = 0;
+    for (const q of cells) {
+      const i = q % nx, j = (q / nx) | 0;
+      i0 = Math.min(i0, i); i1 = Math.max(i1, i); j0 = Math.min(j0, j); j1 = Math.max(j1, j); ySum += topY[q];
+    }
+    const y = ySum / cells.length;
+    const ax = x0 + i0 * cell, bx = x0 + (i1 + 1) * cell, az = z0 + j0 * cell, bz = z0 + (j1 + 1) * cell;
+    if (y - floorY < 0.6) {
+      const v = [];
+      for (const px of [ax, bx]) for (const py of [floorY, y]) for (const pz of [az, bz]) v.push(px, py, pz);
+      surfaces.push({ kind: 'mesh', label: 'couch', vertices: v, indices: [] });
+    } else {
+      surfaces.push({ kind: 'plane', label: 'table', polygon: [[ax, y, az], [bx, y, az], [bx, y, bz], [ax, y, bz]] });
+    }
+  }
+  // floor outline = convex hull of the floor cells
+  const pts = [];
+  for (let k = 0; k < nx * nz; k++) if (isFloor[k]) pts.push([x0 + ((k % nx) + 0.5) * cell, z0 + (((k / nx) | 0) + 0.5) * cell]);
+  pts.sort((p, q) => p[0] - q[0] || p[1] - q[1]);
+  const cross = (o, p, q) => (p[0] - o[0]) * (q[1] - o[1]) - (p[1] - o[1]) * (q[0] - o[0]);
+  const hull = [];
+  for (const pass of [pts, pts.slice().reverse()]) {
+    const h = [];
+    for (const p of pass) { while (h.length >= 2 && cross(h.at(-2), h.at(-1), p) <= 0) h.pop(); h.push(p); }
+    h.pop(); hull.push(...h);
+  }
+  if (hull.length >= 3) surfaces.push({ kind: 'plane', label: 'floor', polygon: hull.map(([px, pz]) => [px, floorY, pz]) });
+  // walls on the sides of the floor's footprint that the scan actually has
+  let fx0 = Infinity, fx1 = -Infinity, fz0 = Infinity, fz1 = -Infinity;
+  for (const [px, pz] of pts) { fx0 = Math.min(fx0, px); fx1 = Math.max(fx1, px); fz0 = Math.min(fz0, pz); fz1 = Math.max(fz1, pz); }
+  const ceil = Math.max(box.max.y, floorY + 2.4);
+  const sides = [
+    [[fx0, fz0], [fx0, fz1], 'x', fx0], [[fx1, fz0], [fx1, fz1], 'x', fx1],
+    [[fx0, fz0], [fx1, fz0], 'z', fz0], [[fx0, fz1], [fx1, fz1], 'z', fz1],
+  ];
+  for (const [p, q, axis, at] of sides) {
+    const length = Math.hypot(q[0] - p[0], q[1] - p[1]);
+    if (length < 1) continue;
+    let area = 0;
+    for (let t = 0; t < vert.length; t += 3) if (Math.abs((axis === 'x' ? vert[t] : vert[t + 1]) - at) < 0.35) area += vert[t + 2];
+    if (area < 0.25 * length) continue; // open side: no wall to burn
+    surfaces.push({ kind: 'plane', label: 'wall', polygon: [[p[0], floorY, p[1]], [q[0], floorY, q[1]], [q[0], ceil, q[1]], [p[0], ceil, p[1]]] });
+  }
+  surfaces.push({ kind: 'plane', label: 'ceiling', polygon: [[box.min.x, ceil, box.min.z], [box.max.x, ceil, box.min.z], [box.max.x, ceil, box.max.z], [box.min.x, ceil, box.max.z]] });
+  return surfaces;
 }
 
 // =====================================================================
@@ -1337,8 +1468,15 @@ export class FireSystem {
     this._rebuildSurfaces();
   }
 
-  /** ExitSign list (kept by reference): open exits keep a clear zone */
-  setExits(exits) { this.sim.setExits(exits); }
+  /** Use an unlabeled scan mesh (e.g. the room OBJ) as fuel: see surfacesFromMesh() */
+  setFuelMesh(root) {
+    const surfaces = surfacesFromMesh(root);
+    this.setSurfaces(surfaces);
+    return surfaces;
+  }
+
+  /** ExitSign list (kept by reference): open exits keep a clear zone. Without it, every ExitSign in a scene counts. */
+  setExits(exits) { this._exitsSet = true; this.sim.setExits(exits); }
 
   /** Start a fire at a world position (snaps to the nearest fuel within 0.6 m) */
   ignite(pos) {
@@ -1369,6 +1507,12 @@ export class FireSystem {
     dt = Math.min(dt, 0.1);
     this.time += dt;
     this._acc += dt;
+    if (!this._exitsSet) { // nobody called setExits(): use every exit sign that's in a scene
+      const list = this._liveExits ??= [];
+      list.length = 0;
+      for (const sgn of _exitSigns) if (sgn.sprite.parent) list.push(sgn);
+      this.sim.exits = list;
+    }
     let ticked = false;
     for (let k = 0; this._acc >= TICK && k < 3; k++) {
       this._acc -= TICK;
@@ -1902,13 +2046,34 @@ export function fireSystem() {
   _default = new FireSystem();
   const sys = _default;
   sys._compat = new Set();
+  sys._roomFetch = 'none';
   if (typeof fetch === 'function') {
+    sys._roomFetch = 'pending';
     fetch('/api/room')
       .then((r) => (r.ok ? r.json() : null))
-      .then((d) => { if (d?.surfaces?.length && !sys._surfacesSet) sys.setSurfaces(d.surfaces); })
-      .catch(() => {});
+      .then((d) => {
+        if (d?.surfaces?.length && !sys._surfacesSet) sys.setSurfaces(d.surfaces);
+        sys._roomFetch = d?.surfaces?.length ? 'ok' : 'none';
+      })
+      .catch(() => { sys._roomFetch = 'none'; });
   }
   return sys;
+}
+
+// The scene's room scan for the default system: the direct child of `scene` with the most
+// triangles (at least 3,000), skipping our own effects. Used when there's no room.json.
+function findScanMesh(scene) {
+  let best = null, bestTris = 3000;
+  for (const child of scene.children) {
+    if (child.name === 'FireSystem' || child.name === 'Smoke' || child.isCamera || child.isLight) continue;
+    let tris = 0;
+    child.traverse((o) => {
+      if (!o.isMesh || o.isSprite || !o.geometry?.attributes?.position) return;
+      tris += (o.geometry.index ? o.geometry.index.count : o.geometry.attributes.position.count) / 3;
+    });
+    if (tris > bestTris) { bestTris = tris; best = child; }
+  }
+  return best;
 }
 
 /**
@@ -1939,6 +2104,12 @@ export class Fire {
     const sys = this.system;
     // the system draws in world space: put it next to this fire's group (normally the scene)
     if (!sys.group.parent && this.group.parent) this.group.parent.add(sys.group);
+    // no room.json and nobody set fuel: burn the room scan mesh in the scene, once
+    if (!sys._surfacesSet && sys._roomFetch === 'none' && !sys._autoFuel && this.group.parent) {
+      sys._autoFuel = true;
+      const scan = findScanMesh(this.group.parent);
+      if (scan) sys.setFuelMesh(scan);
+    }
     // all Fires share one system: only the first one steps it
     if (sys._compat.values().next().value === this) sys.update(dt, { running: growing });
     this.intensity = sys.sim.intensityNear(this.position);
@@ -2199,6 +2370,7 @@ export class Smoke {
 const SIGN_W = 0.9;
 const SIGN_H = 0.45;
 const RING_Y = 0.025; // just above the floor, so the ring doesn't z-fight with it
+const _exitSigns = new Set(); // every live sign: FireSystem keeps fire away from the open ones
 
 export class ExitSign {
   /**
@@ -2232,6 +2404,7 @@ export class ExitSign {
 
     this.setBlocked(blocked);
     this.update(0); // place the ring on the floor even if update() is never called
+    _exitSigns.add(this);
   }
 
   setBlocked(blocked) {
@@ -2262,9 +2435,21 @@ export class ExitSign {
   }
 
   dispose() {
+    _exitSigns.delete(this);
     this.sprite.material.dispose();
     this._ring.geometry.dispose();
     this._ring.material.dispose();
     this.sprite.removeFromParent();
   }
+}
+
+// Vision Pro drill hook, called by eileen-xr.js. ponytail: stub until Varnika fills it in.
+// roomRoot = the scan group (scan coordinates); returned positions are XR world coordinates.
+export function createXRFire(roomRoot, camera) {
+  return {
+    ignite(roomPos) {},              // roomPos [x, y, z] in scan coordinates
+    update(dt, running) { return 0; }, // smoke depth at the head, 0–1
+    worldFires() { return []; },     // THREE.Vector3[] for heat and the voice agent
+    reset() {},
+  };
 }

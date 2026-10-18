@@ -179,6 +179,7 @@ firedrill/
       heat.js               (Devaj)   WebSocket to the server, heat direction math
       hud.js                (Prakhar) status text on screen / in headset
   server/                   (Devaj)   Python server + DataFeel driver
+  unity/                    (Devaj)   Unity 6000.5.10f1 phone-AR fire (ARCore/ARKit): tap a surface to ignite; code in Assets/Fire
   data/                     room.json and drill logs (commit room.json so everyone gets it)
   pitch/                    (Emma)    script, slides, video
   README.md                 this handbook
@@ -325,7 +326,7 @@ Everyone codes against these, so pieces plug together at merge time.
 - `new FireSystem(scene, { surfaces })` → one fire simulation for the whole room (recommended). `surfaces` = `room.json` surfaces; tables, couches etc., the floor and the walls become fuel.
   - `.ignite(pos)` start a fire (snaps to the nearest fuel) · `.update(dt, { running })` (running = drill on: spreads, grows, burns out) · `.setExits(exitSigns)` (open exits keep a 1.5 m fire-free zone)
   - `.hotspots` → up to 8 `{ position, intensity 0–1 }` (use for heat direction) · `.totalIntensity` · `.reset()` · `.startSound()` / `.stopSound()` · `.setSurfaces(surfaces)` · `.speed` (1 = demo pace)
-- `new Fire(position)` still works: it lights a shared FireSystem (`fireSystem()`), which loads `/api/room` for fuel unless you call `fireSystem().setSurfaces(surfaces)`. `.group` (add to scene), `.update(dt, growing)`, `.intensity` (fire size around that spot), `.startSound()`, `.stopSound()`
+- `new Fire(position)` still works: it lights a shared FireSystem (`fireSystem()`), which loads `/api/room` for fuel unless you call `fireSystem().setSurfaces(surfaces)`. With no `room.json`, it burns the room scan mesh in the scene by itself (floor, flat furniture 0.25–1.4 m up, scanned walls); `fireSystem().setFuelMesh(mesh)` does that explicitly. Every `ExitSign` in the scene keeps fire 1.5 m away unless `setExits()` names the exits. `.group` (add to scene), `.update(dt, growing)`, `.intensity` (fire size around that spot), `.startSound()`, `.stopSound()`
 - `createFireBloom(renderer, scene, camera)` → `.render()` (desktop glow + heat shimmer above the fires; call it instead of `renderer.render(scene, camera)`; renders plainly in XR), `.enabled`, `.setSize(w, h)`
 - `new Smoke(scene, camera)` → `.start(ceilingY)`, `.update(dt, headY, fires)` returns smoke depth 0–1 (`fires` = the FireSystem or the Fire list), `.stop()`
 - `new ExitSign(position, blocked)` → `.sprite`, `.position`, `.setBlocked(bool)`
@@ -347,9 +348,32 @@ Everyone codes against these, so pieces plug together at merge time.
 **Calling it** (`heat.js`, Devaj): `connect()` once at startup (`main.js` already does), then each frame in the drill loop:
 `send({ ...heatFrom(headPos, headQuat, firePositions), buzz, cool })`. `headPos`/`headQuat` are the camera's world position and quaternion (three.js objects work as-is); `firePositions` are the fires' world positions. `send` keeps only the newest message and handles the 4/s limit and reconnects, so call it freely.
 
+**Vision Pro drill hooks** (`eileen-xr.js` calls these; stubs are in place, owners fill them in). Positions are XR world unless noted:
+- `createXRFire(roomRoot, camera)` (effects.js) → `{ ignite(scanPos), update(dt, running) → smokeDepth 0–1, worldFires() → Vector3[], reset() }`
+- `drill` (drill.js) `.start()`, `.update(dt, { smokeDepth, head, exits }) → { time, oxygen 0–1, smokeDepth, escaped, timedOut }`, `.stop(reason)`, `.stats() → { time, oxygen, smokeTime, pctLow, checkedBlocked }`
+- `createXRHud(camera)` (hud.js) → `{ update(state), review(stats) }`
+- `startAgent(getContext)` (voice.js): `getContext() → { head, facing, fires, exits, blocked }` as `[x,y,z]` arrays
+- `POST /py/agent` (server): `{ transcript, head, facing, fires, exits, blocked } → { reply }`
+- Ignition: an annotation item `{ type: 'fire', position }` (scan coordinates) from the observer. Test without it: `firedrill.ignite([x, y, z])` in the headset page console.
+
 ---
 
 ## 8. Build plan by person
+
+### Today's demo: Vision Pro (WebXR), decided 4:50 PM
+The demo runs on Eileen's Vision Pro page (`web/eileen-xr.html`, `immersive-vr` in Safari: the textured scan, not passthrough). The desktop observer (`desktop.js`) aligns the headset and places markers. A Unity Vision Pro port comes **after** the hackathon: it needs a Mac, a paid Unity license tier, and the fire shaders rewritten in Shader Graph, and visionOS gives no camera frames without Apple's Enterprise entitlement. The 5:30 feature freeze still applies unless the team agrees to move it.
+
+Flow: the observer places a fire in a corner of the scan → the headset sees fire and smoke → the EXIT signs light up and route arrows appear at once → the user walks out while the agent coaches by voice, the wrists warm near the fire, and the oxygen bar drains in smoke → review screen with time and oxygen.
+
+Paste-ready instructions for each person's agent: [`TASKS-visionpro.md`](TASKS-visionpro.md). The wiring and stubs are already in `eileen-xr.js`, so everyone can start at once.
+
+| Who | Task | Files |
+|---|---|---|
+| Eileen | Add a Fire tool to the observer. On ignition, run Auto route from the headset to the nearest unblocked EXIT and show it. Exits come from the observer's EXIT marks on the scan; that is our "exit-sign detection". After ignition, show large glowing EXIT signs and floor arrows. | `eileen-*.js`, `desktop.js` |
+| Varnika | Fill in `createXRFire()`: `FireSystem` + `Smoke` burning the scan from the fire marker, firelight on the scan, and the frame rate held in visionOS Safari. | `effects.js` |
+| Prakhar | Host: Vite with `vite.eileen.config.js` plus `PY_SERVER`. In-headset HUD: drill timer, an oxygen bar that drains with `smoke.update()` depth, and a review panel (escape time, oxygen left, time in smoke). Merge to `main`. | `hud.js`, `drill.js` (Eileen's, agreed) |
+| Emma | Hands-free voice: start the mic when VR starts, keep listening, and send each finished turn to `/py/agent`. Speak the reply with `speechSynthesis`. Test the mic in visionOS Safari first. Pitch and submission. | `voice.js`, `pitch/` |
+| Devaj | `/py/agent`: transcript + headset position, fire and exits → a short spoken direction from Claude. Check the heat stream from the headset (already wired in `eileen-xr.js`). Wear the DataFeel on the wrists and test. Stretch: find EXIT signs automatically in the scan textures with Claude vision. | `server/`, `heat.js` |
 
 ### Prakhar — XR lead + host
 - **Scaffold** (Vite HTTPS app, placeholder modules, `server/app.py`): ✅ done
@@ -370,7 +394,7 @@ Everyone codes against these, so pieces plug together at merge time.
 5. **Record an AR clip** before the Quest goes back (Quest: Camera → Record video). Try to rebook the Quest near judging for a clean final recording.
 
 ### Varnika — Effects (`effects.js`)
-- **Fire, smoke, head fog, signs, spread:** ✅ done in test page (`/effects-test.html`) · **Visual polish:** ✅ done (readable signs at 3 m, visible smoke ceiling reaching 1.6 m in 15–18 s, fire under a 2,000-particle / 4-light budget) · **Realistic fire:** ✅ done (noise-shader flames, embers, scorch marks, breathing light, glow through smoke) · **Fire redesign:** ✅ done: `FireSystem` burns the room's surfaces cell by cell (tabletops, furniture sides, floor, walls). Fire grows, creeps across surfaces, climbs walls, drops burning bits on the floor, catches nearby furniture by radiant heat, then chars and glows out. Demo pace in the test room: table fully alight ~20 s, floor ~25 s, couch ~38 s, walls ~85 s. Flames play a flipbook (Unity Labs `Flame03`, `web/public/textures/flames.png`; each tongue with its own speed, start frame and mirroring; procedural flames if the file is missing; V toggles on the test page), char and ember overlays on the surfaces, smoke rising off the flames, fire glow on the smoke ceiling. Test page: H = heat view, F = 4× time · next: 🚧 test in the Quest (lower `maxFlames` if it drops frames) · **Fire look in the room:** ✅ done (desktop bloom via `createFireBloom`, stronger firelight that scales with fire size and also tints the real room in AR, furniture chars under the flames, thick black smoke above each fire; B toggles bloom on the test page) · **Layered fire:** ✅ done (yellow-white core, orange body, dark red tips into a straight black smoke column; irregular licking heights; flare-ups with sparks every 5–10 s; desktop heat shimmer)
+- **Fire, smoke, head fog, signs, spread:** ✅ done in test page (`/effects-test.html`) · **Visual polish:** ✅ done (readable signs at 3 m, visible smoke ceiling reaching 1.6 m in 15–18 s, fire under a 2,000-particle / 4-light budget) · **Realistic fire:** ✅ done (noise-shader flames, embers, scorch marks, breathing light, glow through smoke) · **Fire redesign:** ✅ done: `FireSystem` burns the room's surfaces cell by cell (tabletops, furniture sides, floor, walls). Fire grows, creeps across surfaces, climbs walls, drops burning bits on the floor, catches nearby furniture by radiant heat, then chars and glows out. Demo pace in the test room: table fully alight ~20 s, couch ~37 s, floor 20–45 s, first wall ~88 s, desk ~2.2 min. Flames play a flipbook (Unity Labs `Flame03`, `web/public/textures/flames.png`; each tongue with its own speed, start frame and mirroring; procedural flames if the file is missing; V toggles on the test page), char and ember overlays on the surfaces, smoke rising off the flames, fire glow on the smoke ceiling. Test page: H = heat view, F = 4× time · next: 🚧 test in the Quest (lower `maxFlames` if it drops frames) · **Fire look in the room:** ✅ done (desktop bloom via `createFireBloom`, stronger firelight that scales with fire size and also tints the real room in AR, furniture chars under the flames, thick black smoke above each fire; B toggles bloom on the test page) · **Fire in the real app:** ✅ done (no room.json needed: fire spreads over the scanned office mesh in `main.js` with no code changes there; open exit signs stay clear automatically) · **Layered fire:** ✅ done (yellow-white core, orange body, dark red tips into a straight black smoke column; irregular licking heights; flare-ups with sparks every 5–10 s; desktop heat shimmer)
 - **Credit (for the submission form):** Flame flipbooks: Unity Labs, CC0 (`Flame03` from Unity's free VFX flipbooks, https://unity.com/blog/engine-platform/free-vfx-image-sequences-flipbooks). Emma: list it under credits / third-party assets.
 1. **Fire:** about 80–100 particles with a soft round texture and additive blending. Colour runs yellow → orange → dark red as they rise; add a flickering orange `PointLight`. `intensity` grows slowly during the drill.
 2. **Smoke layer:** a few stacked gray translucent planes starting at the ceiling height and dropping slowly to about 1.1 m, faster with more fires. Add gray smoke puffs rising from each fire.
@@ -410,6 +434,8 @@ Everyone codes against these, so pieces plug together at merge time.
    - Heat changes over seconds, so start warming from a few metres away.
 
 *Done when:* walking toward the fire in desktop mode warms the correct wrist, standing up in smoke buzzes, and reaching the exit gives a cool pulse.
+
+5. ⏸ **Phone-AR fire (`unity/`)**, paused for today's Vision Pro demo; port to visionOS after the hackathon. Devaj has it working and is the only one who builds and runs the Unity app; send Unity requests to him. Open it with Unity Hub → Add → `unity/` (Unity 6000.5.10f1). Then run **Fire > Build AR Scene**, which writes `Assets/Fire/Scenes/FireAR.unity`. Tapping a detected plane ignites a fire, which spreads over the planes with smoke and firelight. `Library/` is regenerated and gitignored.
 
 ### Emma — Voice, sound, pitch (`voice.js`, `public/sounds/`, `pitch/`)
 1. **Voice (`voice.js`):**
