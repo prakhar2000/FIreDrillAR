@@ -353,7 +353,7 @@ Everyone codes against these, so pieces plug together at merge time.
 - `drill` (drill.js) `.start()`, `.update(dt, { smokeDepth, head, exits }) → { time, oxygen 0–1, smokeDepth, escaped, timedOut }`, `.stop(reason)`, `.stats() → { time, oxygen, smokeTime, pctLow, checkedBlocked }`
 - `createXRHud(camera)` (hud.js) → `{ update(state), review(stats) }`
 - `startAgent(getContext)` (voice.js): `getContext() → { head, facing, fires, exits, blocked }` as `[x,y,z]` arrays
-- `POST /py/agent` (server): `{ transcript, head, facing, fires, exits, blocked } → { reply }`
+- `POST /py/agent` (server): `{ transcript, head, facing, fires, exits, blocked, smoke? } → { reply }`. `smoke` (0–1, optional) is the smoke depth; without it, any fire counts as "in smoke" and the reply says to stay low. Facts (nearest exit not within 1.5 m of a blocked marker, its distance and direction, nearest fire) are computed in Python (`server/agent.py`); Claude (`claude-haiku-5-5`) only words them. With no `ANTHROPIC_API_KEY` or on error/timeout (6 s), a rule-based reply is returned, so it never goes silent.
 - Ignition: an annotation item `{ type: 'fire', position }` (scan coordinates) from the observer. Test without it: `firedrill.ignite([x, y, z])` in the headset page console.
 
 ---
@@ -434,6 +434,11 @@ Paste-ready instructions for each person's agent: [`TASKS-visionpro.md`](TASKS-v
    - Heat changes over seconds, so start warming from a few metres away.
 
 *Done when:* walking toward the fire in desktop mode warms the correct wrist, standing up in smoke buzzes, and reaching the exit gives a cool pulse.
+
+**Vision Pro (today):**
+- ✅ **`POST /agent`** (`server/agent.py`, contract in section 7). Check: `python agent.py` in `server/`. `/health` shows `"anthropic_key"`; add `ANTHROPIC_API_KEY` to `server/.env` for Claude replies (rule-based until then).
+- ✅ **Buzz pulses** instead of a constant drone: 0.25 s on / 0.5 s off while `buzz` is true (`BUZZ_EVERY` in `dots.py`).
+- 🚧 Heat stream from the Vision Pro through Prakhar's Vite proxy, and the worn wrist run (heat / buzz / cool, `SWAP_SIDES` if needed).
 
 5. ⏸ **Phone-AR fire (`unity/`)**, paused for today's Vision Pro demo; port to visionOS after the hackathon. Devaj has it working and is the only one who builds and runs the Unity app; send Unity requests to him. Open it with Unity Hub → Add → `unity/` (Unity 6000.5.10f1). Then run **Fire > Build AR Scene**, which writes `Assets/Fire/Scenes/FireAR.unity`. Tapping a detected plane ignites a fire, which spreads over the planes with smoke and firelight. `Library/` is regenerated and gitignored.
 
