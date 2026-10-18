@@ -1,0 +1,8 @@
+html, body { margin: 0; min-height: 100%; background: #101b29; color: #e4eef8; font-family: system-ui, sans-serif; }
+canvas { display: block; }
+.eileen-observer { display: grid; grid-template-columns: minmax(360px, 420px) minmax(0, 1fr); height: 100dvh; }
+.eileen-observer > header { overflow-y: auto; border-right: 1px solid #334456; }
+.eileen-observer [data-viewport] { min-width: 0; height: 100% !important; }
+@media (max-width: 1000px) {
+  .eileen-observer { grid-template-columns: 1fr; grid-template-rows: 45dvh 55dvh; }
+}
