@@ -369,7 +369,7 @@ Paste-ready instructions for each person's agent: [`TASKS-visionpro.md`](TASKS-v
 
 | Who | Task | Files |
 |---|---|---|
-| Eileen | Add a Fire tool to the observer. On ignition, run Auto route from the headset to the nearest unblocked EXIT and show it. Exits come from the observer's EXIT marks on the scan; that is our "exit-sign detection". After ignition, show large glowing EXIT signs and floor arrows. | `eileen-*.js`, `desktop.js` |
+| Eileen | ✅ (done by Devaj on `devaj`, Eileen's files) Fire tool in the observer; on ignition Auto route runs from the live headset to the nearest unblocked EXIT and replans every 3 s; after ignition the headset shows large glowing EXIT signs, red X on BLOCKED and pulsing floor chevrons. Exits come from the observer's EXIT marks on the scan; that is our "exit-sign detection". Tested in headless Chrome with Meta's IWER WebXR emulator; 🚧 not yet on the Vision Pro. ⚠️ Eileen's `origin/eileen` 200dc22 conflicts, see her section. | `eileen-*.js`, `desktop.js` |
 | Varnika | ✅ `createXRFire()` done: the marker starts a burning object that spreads over the scan's floor and furniture (scan mesh as fuel, in scan coordinates under `roomRoot`); firelight tints the scan itself; smoke fills the space 2.4 m above the scan floor and drops to 1.1 m; flame edges tuned for an opaque scene; budget in `XR_QUALITY` (140 flames, 80 embers, 200 smoke puffs). Tested in Chrome with a rotated, aligned scan; 🚧 not yet on the Vision Pro. | `effects.js` |
 | Prakhar | ✅ HUD and drill: timer, oxygen (empty in 45 s at full smoke, slow recovery in clear air), escape within 1 m, 3 min / out-of-air timeout, review card. ✅ Hosting the Eileen server (`vite.eileen.config.js`, `PY_SERVER` → Devaj). Merged to `main`. | `hud.js`, `drill.js` (Eileen's, agreed) |
 | Emma | Hands-free voice: start the mic when VR starts, keep listening, and send each finished turn to `/py/agent`. Speak the reply with `speechSynthesis`. Test the mic in visionOS Safari first. Pitch and submission. | `voice.js`, `pitch/` |
@@ -419,6 +419,8 @@ Paste-ready instructions for each person's agent: [`TASKS-visionpro.md`](TASKS-v
 
 *Done when:* the full drill runs on a laptop in the real scanned room and ends on the review screen. **This is our live demo after the Quest goes back.**
 
+⚠️ **Unmerged `origin/eileen` commit 200dc22 (do not merge as is).** It conflicts with `main` in `web/src/eileen-xr.js` and `web/src/desktop.js`. It replaces the drill wiring with an observer-synced `createRoomEffects` (`eileen-effects.js`, fixed fire patches that never spread, smoke on an observer clock, its own `eileen:effects` relay event) built on a 2,270-line copy of `effects.js` in `web/eileen/vendor/`, plus a second "Place fire" button and a separate `firePositions` list instead of the `{ type: 'fire' }` annotation item. If you rebase it, keep every section 7 "Vision Pro drill hooks" call in `eileen-xr.js`: `createXRFire(roomRoot, camera)` ignited from the `fire` annotation item, `drill.start/update/stop/stats`, `createXRHud(camera)` (camera added to the scene), `startAgent(agentContext)`, `connectHeat()` + `sendHeat(heatFrom(...))` every frame, and `window.firedrill.ignite`. In `desktop.js` keep the single `data-mark="fire"` tool (it writes the annotation item and triggers Auto route + the 3 s replan). Drop the vendor copy and import `effects.js` directly if you still need anything from it.
+
 ### Devaj — Backend + DataFeel (`server/`, `heat.js`)
 1. **Server** from section 6.4: `/health`, `/token`, `/ws/heat` printing messages.
 2. ✅ **`heat.js` (browser side):** a WebSocket to `/py/ws/heat` that reconnects every 3 s, sending at most 4 messages per second. Heat math:
@@ -438,7 +440,8 @@ Paste-ready instructions for each person's agent: [`TASKS-visionpro.md`](TASKS-v
 **Vision Pro (today):**
 - ✅ **`POST /agent`** (`server/agent.py`, contract in section 7). Check: `python agent.py` in `server/`. `/health` shows `"anthropic_key"`; add `ANTHROPIC_API_KEY` to `server/.env` for Claude replies (rule-based until then).
 - ✅ **Buzz pulses** instead of a constant drone: 0.25 s on / 0.5 s off while `buzz` is true (`BUZZ_EVERY` in `dots.py`).
-- ✅ **Place fire** tool in the observer (desktop.js, Eileen's file): click the scan, the headset ignites there; clicking again moves it.
+- ✅ **Place fire** tool in the observer (desktop.js, Eileen's file): click the scan, the headset ignites there; clicking again moves it. Verified end to end (observer + headset page in headless Chrome with the IWER emulator): fire, smoke and HUD timer start on the headset.
+- ✅ Eileen's route guide and exit signs (her row in the Vision Pro table).
 - 🚧 Heat stream from the Vision Pro through Prakhar's Vite proxy, and the worn wrist run (heat / buzz / cool, `SWAP_SIDES` if needed).
 
 5. ⏸ **Phone-AR fire (`unity/`)**, paused for today's Vision Pro demo; port to visionOS after the hackathon. Devaj has it working and is the only one who builds and runs the Unity app; send Unity requests to him. Open it with Unity Hub → Add → `unity/` (Unity 6000.5.10f1). Then run **Fire > Build AR Scene**, which writes `Assets/Fire/Scenes/FireAR.unity`. Tapping a detected plane ignites a fire, which spreads over the planes with smoke and firelight. `Library/` is regenerated and gitignored.
