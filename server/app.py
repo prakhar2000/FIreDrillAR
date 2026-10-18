@@ -8,7 +8,7 @@ import agent
 
 from dots import Dots
 
-load_dotenv()
+load_dotenv(override=True)   # .env wins over an empty ANTHROPIC_API_KEY in the shell
 KEY = os.getenv("ASSEMBLYAI_API_KEY", "")
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 app = FastAPI()
