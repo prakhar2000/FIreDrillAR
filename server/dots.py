@@ -64,6 +64,13 @@ class Dots:
         except ImportError:
             self.status = "datafeel SDK not installed: pip install -r requirements.txt"
             return
+        # minimalmodbus caches one open serial handle per port name; after an unplug that handle is dead and
+        # every probe fails forever, so drop the cache before each scan
+        import minimalmodbus
+        for s in minimalmodbus._serialports.values():
+            with contextlib.suppress(Exception):
+                s.close()
+        minimalmodbus._serialports.clear()
         try:
             with contextlib.redirect_stdout(io.StringIO()):   # the SDK prints every address it probes
                 self.dots = discover_devices(4)
