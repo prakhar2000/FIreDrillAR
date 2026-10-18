@@ -371,7 +371,7 @@ Paste-ready instructions for each person's agent: [`TASKS-visionpro.md`](TASKS-v
 |---|---|---|
 | Eileen | Add a Fire tool to the observer. On ignition, run Auto route from the headset to the nearest unblocked EXIT and show it. Exits come from the observer's EXIT marks on the scan; that is our "exit-sign detection". After ignition, show large glowing EXIT signs and floor arrows. | `eileen-*.js`, `desktop.js` |
 | Varnika | Fill in `createXRFire()`: `FireSystem` + `Smoke` burning the scan from the fire marker, firelight on the scan, and the frame rate held in visionOS Safari. | `effects.js` |
-| Prakhar | Host: Vite with `vite.eileen.config.js` plus `PY_SERVER`. In-headset HUD: drill timer, an oxygen bar that drains with `smoke.update()` depth, and a review panel (escape time, oxygen left, time in smoke). Merge to `main`. | `hud.js`, `drill.js` (Eileen's, agreed) |
+| Prakhar | ✅ HUD and drill: timer, oxygen (empty in 45 s at full smoke, slow recovery in clear air), escape within 1 m, 3 min / out-of-air timeout, review card. 🚧 Host the Eileen server at the demo. Merge to `main`. | `hud.js`, `drill.js` (Eileen's, agreed) |
 | Emma | Hands-free voice: start the mic when VR starts, keep listening, and send each finished turn to `/py/agent`. Speak the reply with `speechSynthesis`. Test the mic in visionOS Safari first. Pitch and submission. | `voice.js`, `pitch/` |
 | Devaj | `/py/agent`: transcript + headset position, fire and exits → a short spoken direction from Claude. Check the heat stream from the headset (already wired in `eileen-xr.js`). Wear the DataFeel on the wrists and test. Stretch: find EXIT signs automatically in the scan textures with Claude vision. | `server/`, `heat.js` |
 
