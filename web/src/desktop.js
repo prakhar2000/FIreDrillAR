@@ -115,7 +115,8 @@ function redrawAnnotations(state) {
     const position = new THREE.Vector3().fromArray(item.position);
     const route = item.type === 'waypoint';
     const blocked = item.type === 'blocked';
-    const color = blocked ? 0xff6262 : 0x55f0ad;
+    const fire = item.type === 'fire';
+    const color = fire ? 0xff8a2a : blocked ? 0xff6262 : 0x55f0ad;
     const marker = new THREE.Mesh(new THREE.CylinderGeometry(route ? 0.08 : 0.24,
       route ? 0.08 : 0.24, 0.035, 24), new THREE.MeshBasicMaterial({ color }));
     marker.position.copy(position).addScaledVector(UP, 0.06);
@@ -123,8 +124,8 @@ function redrawAnnotations(state) {
     if (route) {
       waypoints.push(position.clone().addScaledVector(UP, 0.09));
     } else {
-      label(group, blocked ? 'BLOCKED' : 'EXIT',
-        [position.x, position.y + 0.65, position.z], blocked ? '#ff9090' : '#74f3c6');
+      label(group, fire ? 'FIRE' : blocked ? 'BLOCKED' : 'EXIT',
+        [position.x, position.y + 0.65, position.z], fire ? '#ffb070' : blocked ? '#ff9090' : '#74f3c6');
     }
   }
   if (waypoints.length > 1) {
@@ -177,7 +178,9 @@ function setAnnotationTool(state, tool = null) {
     button.setAttribute('aria-pressed', String(button.dataset.mark === tool));
     button.style.background = button.dataset.mark === tool ? '#22694f' : '#263b4e';
   }
-  state.panel.querySelector('[data-edit]').textContent = tool === 'exit'
+  state.panel.querySelector('[data-edit]').textContent = tool === 'fire'
+    ? 'Click the scan where the fire starts; the headset ignites there. Clicking again moves it.'
+    : tool === 'exit'
     ? 'Click the floor at a known exit. Choose another tool or press Esc when done.'
     : tool === 'blocked' ? 'Click the floor at a blocked passage. Press Esc when done.'
       : tool === 'waypoint' ? 'Click floor points in travel order, including turns around obstacles and the exit. Finish route or Esc ends drawing.'
@@ -439,6 +442,7 @@ export function start(options = {}) {
       <p data-connection role="status">Choose a start on the floor. Open the headset page using this computer's Wi-Fi IP and the same pairing code.</p>
       <p data-alignment role="status">Alignment not set. Stand at the chosen start, face the specified direction, then align on this computer.</p>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+        <button type="button" data-mark="fire" aria-pressed="false">Place fire</button>
         <button type="button" data-mark="exit" aria-pressed="false">Mark exit</button>
         <button type="button" data-mark="blocked" aria-pressed="false">Mark blocked</button>
         <button type="button" data-mark="waypoint" aria-pressed="false">Draw route</button>
@@ -732,6 +736,9 @@ export function start(options = {}) {
       if (state.annotationTool === 'waypoint') {
         const previous = items.filter((item) => item.type === 'waypoint').at(-1);
         if (previous && new THREE.Vector3().fromArray(previous.position).distanceTo(hit.point) < 0.05) return;
+      }
+      if (state.annotationTool === 'fire') {   // one ignition point: the headset ignites from the first fire item
+        for (let i = items.length - 1; i >= 0; i--) if (items[i].type === 'fire') items.splice(i, 1);
       }
       items.push({ type: state.annotationTool, position: hit.point.toArray() });
       redrawAnnotations(state);
