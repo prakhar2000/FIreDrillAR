@@ -251,7 +251,7 @@ function particleMaterial(map, mode) {
       void main() {
         vColor = aColor;
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
-        gl_PointSize = aSize * uHalfH * projectionMatrix[1][1] / max(-mv.z, 0.05);
+        gl_PointSize = aSize * length(modelMatrix[0].xyz) * uHalfH * projectionMatrix[1][1] / max(-mv.z, 0.05);
         gl_Position = projectionMatrix * mv;
       }`,
     fragmentShader: /* glsl */ `
@@ -638,11 +638,19 @@ function buildFuel(surfaces, piles) {
 //               floor; higher: a table top with an apron)
 //   walls     = sides of the floor's footprint where the scan has vertical surfaces
 //   ceiling   = the scan's top, at least 2.4 m above the floor (scans often stop short of it)
-// Returns room.json-style surfaces in world space (identity matrices).
+// Returns room.json-style surfaces (identity matrices) in world space, or in `relativeTo`'s local
+// space when given (e.g. the scan's own coordinates under a scaled, rotated room group).
 // ---------------------------------------------------------------------
-export function surfacesFromMesh(root, { cell = 0.2 } = {}) {
-  root.updateMatrixWorld(true);
-  const box = new THREE.Box3().setFromObject(root);
+export function surfacesFromMesh(root, { cell = 0.2, relativeTo = null } = {}) {
+  (relativeTo || root).updateMatrixWorld(true);
+  const inv = relativeTo ? new THREE.Matrix4().copy(relativeTo.matrixWorld).invert() : null;
+  const meshMatrix = (o) => (inv ? new THREE.Matrix4().multiplyMatrices(inv, o.matrixWorld) : o.matrixWorld);
+  const box = new THREE.Box3(), pv = new THREE.Vector3();
+  root.traverse((o) => {
+    if (!o.isMesh || !o.geometry?.attributes?.position) return;
+    const pos = o.geometry.attributes.position, m = meshMatrix(o);
+    for (let k = 0; k < pos.count; k++) box.expandByPoint(pv.fromBufferAttribute(pos, k).applyMatrix4(m));
+  });
   if (box.isEmpty()) return [];
   const x0 = box.min.x, z0 = box.min.z;
   const nx = Math.max(1, Math.ceil((box.max.x - x0) / cell)), nz = Math.max(1, Math.ceil((box.max.z - z0) / cell));
@@ -654,7 +662,7 @@ export function surfacesFromMesh(root, { cell = 0.2 } = {}) {
   const cj = (z) => Math.min(nz - 1, Math.max(0, Math.floor((z - z0) / cell)));
   root.traverse((o) => {
     if (!o.isMesh || !o.geometry?.attributes?.position) return;
-    const pos = o.geometry.attributes.position, idx = o.geometry.index, m = o.matrixWorld;
+    const pos = o.geometry.attributes.position, idx = o.geometry.index, m = meshMatrix(o);
     const count = idx ? idx.count : pos.count;
     for (let t = 0; t + 2 < count; t += 3) {
       const ia = idx ? idx.getX(t) : t, ib = idx ? idx.getX(t + 1) : t + 1, ic = idx ? idx.getX(t + 2) : t + 2;
@@ -839,9 +847,11 @@ export class FireSim {
     return best;
   }
 
-  /** Start a fire at a point. Returns the cell index. */
-  ignite(p, strength = 0.25) {
-    let i = this.nearestCell(p.x, p.y, p.z);
+  /** Start a fire at a point. Returns the cell index. pile = always start a burning object there
+   *  (a 0.9 m fuel patch) instead of lighting whatever surface is under it */
+  ignite(p, strength = 0.25, pile = false) {
+    if (pile) p = { x: p.x, y: p.y + 0.03, z: p.z }; // just above the floor it stands on
+    let i = pile ? -1 : this.nearestCell(p.x, p.y, p.z);
     if (i < 0) {
       // nothing burnable here: add a small fuel patch, keeping the state of everything else
       const saved = this._snapshot();
@@ -1152,6 +1162,7 @@ function flameMaterial() {
       uNoise: { value: noiseTexture() }, uTime: { value: 0 }, uScroll: { value: new THREE.Vector3() },
       uSheet: { value: flipbookTexture() }, uSheetOn: { value: 0 }, uLinear: LINEAR_OUT,
       uFlare: { value: new THREE.Vector4(0, 0, 1, 0) },
+      uEdge: { value: 0.1 }, // how "over" (vs additive) the dim flame edges blend: 0.1 passthrough, higher on an opaque scene
     },
     vertexShader: /* glsl */ `
       attribute vec2 aQuad;    // x: -1..1 across, y: 0..1 up
@@ -1169,15 +1180,19 @@ function flameMaterial() {
       varying float vSheet;
       void main() {
         vSheet = uSheetOn;
-        vec3 base = iPos.xyz;
+        // instance data is in the parent's space (the sim's); place it in the world through modelMatrix
+        vec3 base = (modelMatrix * vec4(iPos.xyz, 1.0)).xyz;
+        float sc = length(modelMatrix[1].xyz);
+        vec3 up = modelMatrix[1].xyz / sc;
         // flipbook timing per tongue (highp here, so mediump fragments never see big numbers)
         float speed = 0.75 + 0.5 * fract(iPos.w * 7.13);
         float f = iPos.w * 64.0 + uTime * ${FLIPBOOK_FPS.toFixed(1)} * speed;
         float f0 = mod(floor(f), 64.0);
         vFrame = vec3(f0, mod(f0 + 1.0, 64.0), fract(f));
         vMirror = fract(iPos.w * 3.71) < 0.5 ? -1.0 : 1.0;
-        vec2 d = normalize(cameraPosition.xz - base.xz + vec2(1e-4, 0.0));
-        vec3 side = vec3(-d.y, 0.0, d.x);
+        vec3 toCam = cameraPosition - base;
+        toCam -= up * dot(toCam, up);
+        vec3 side = normalize(cross(toCam, up) + vec3(1e-5, 0.0, 0.0)); // billboard around the room's up
         float s = iPos.w * 6.2832;
         // irregular licks, not a steady loop: a slow swell plus sharp spikes, from noise per tongue
         // (rates × 1000 are whole numbers, so the CPU's time wrap at 1000 s doesn't jump)
@@ -1185,12 +1200,12 @@ function flameMaterial() {
         float fast = texture2D(uNoise, vec2(iPos.w * 0.37 + 0.5, uTime * 0.37)).r;
         float lick = 0.55 + 0.5 * slow + 0.75 * fast * fast * fast;
         // flare-up: tongues near it shoot up and widen for a moment
-        float flare = uFlare.w * (1.0 - smoothstep(0.0, uFlare.z, length(base.xz - uFlare.xy)));
+        float flare = uFlare.w * (1.0 - smoothstep(0.0, uFlare.z, length(iPos.xz - uFlare.xy)));
         float h = iShape.y * lick * (1.0 + 0.9 * flare);
         float sway = (sin(uTime * 1.9 + s) + 0.6 * sin(uTime * 3.3 + s * 2.7)) * 0.07 * h * aQuad.y * aQuad.y;
         // the flipbook flame fills about half its frame's width: widen the quad to match
         float wq = iShape.x * mix(1.0, 1.7, uSheetOn) * (1.0 + 0.25 * flare);
-        vec3 w = base + side * (aQuad.x * 0.5 * wq + sway * (1.0 - 0.7 * uSheetOn)) + vec3(0.0, aQuad.y * h, 0.0);
+        vec3 w = base + side * ((aQuad.x * 0.5 * wq + sway * (1.0 - 0.7 * uSheetOn)) * sc) + up * (aQuad.y * h * sc);
         vUv = aQuad;
         vSeed = iPos.w;
         vBurn = min(1.0, iShape.z + 0.5 * flare);
@@ -1202,6 +1217,7 @@ function flameMaterial() {
       uniform vec3 uScroll;   // per-octave upward noise scroll, wrapped to 0–1 on the CPU (mediump-safe)
       uniform sampler2D uSheet;
       uniform float uLinear;
+      uniform float uEdge;
       varying float vSheet;    // uSheetOn, via the vertex shader (uniform precisions must match)
       varying vec2 vUv;
       varying float vSeed;
@@ -1234,7 +1250,7 @@ function flameMaterial() {
           fc *= mix(0.75, 1.0, vBurn);
           fa *= 1.0 - 0.4 * tip;
           // same blending as the procedural flame: bright cores "over", dim edges additive
-          gl_FragColor = vec4(fc * fa, fa * mix(0.1, 0.85, smoothstep(0.25, 0.75, hm)));
+          gl_FragColor = vec4(fc * fa, fa * mix(uEdge, 0.85, smoothstep(0.25, 0.75, hm)));
           ${LINEAR_GLSL}
           return;
         }
@@ -1262,7 +1278,7 @@ function flameMaterial() {
         if (a < 0.004) discard;
         // hot cores blend "over" (overlapping flames settle at flame colour instead of adding up
         // to white); thin, cooler edges blend additively, so they never draw dark outlines
-        gl_FragColor = vec4(c * a, a * mix(0.1, 0.85, smoothstep(0.25, 0.75, heat)));
+        gl_FragColor = vec4(c * a, a * mix(uEdge, 0.85, smoothstep(0.25, 0.75, heat)));
         ${LINEAR_GLSL}
       }`,
     transparent: true,
@@ -1301,12 +1317,11 @@ function surfaceMaterial(cells, sizeU, sizeV, lights) {
     },
     vertexShader: /* glsl */ `
       varying vec2 vUv;
-      varying vec3 vWorld;
+      varying vec3 vWorld; // in the sim's space, like uLights (the overlay mesh sits at the group's origin)
       void main() {
         vUv = uv;
-        vec4 w = modelMatrix * vec4(position, 1.0);
-        vWorld = w.xyz;
-        gl_Position = projectionMatrix * viewMatrix * w;
+        vWorld = position;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
       }`,
     fragmentShader: /* glsl */ `
       precision mediump float;
@@ -1374,10 +1389,18 @@ export class FireSystem {
    * @param {number} [o.maxFlames]  flame tongues drawn at most (lower if the Quest drops frames)
    * @param {number} [o.exitClearance]  m around an open exit where nothing ignites
    * @param {boolean} [o.flipbook]  flame look: flipbook sheet (default) or procedural noise flames
+   * @param {number} [o.embers]  ember pool size · @param {number} [o.smoke] smoke puff pool size
+   * @param {number} [o.edgeOver]  0.1 = flame edges glow additively (passthrough); ~0.5 = they cover an opaque scene
+   * @param {number|null} [o.surfaceLight]  firelight drawn on the surface overlays (default: 1 in XR, 0.3 on desktop)
    */
-  constructor(scene = null, { surfaces = null, speed = 1, maxFlames = 300, exitClearance = 1.5, flipbook = true } = {}) {
+  constructor(scene = null, {
+    surfaces = null, speed = 1, maxFlames = 300, exitClearance = 1.5, flipbook = true,
+    embers = EMBER_N, smoke = SMOKE_N, surfaceLight = null, edgeOver = 0.1,
+  } = {}) {
     this.sim = new FireSim({ speed, exitClearance });
     this.maxFlames = maxFlames;
+    this.surfaceLight = surfaceLight;
+    const EN = (this._emN = embers), SN = (this._smN = smoke);
     this.time = 0;
     this._acc = 0;
     this._surfacesSet = false;
@@ -1399,24 +1422,25 @@ export class FireSystem {
 
     // flames
     const fl = flameMesh(maxFlames * 2);
+    fl.mesh.material.uniforms.uEdge.value = edgeOver;
     this._flames = fl;
     this._useFlipbook = flipbook;
     const on = () => { fl.mesh.material.uniforms.uSheetOn.value = this._useFlipbook ? 1 : 0; };
     if (_sheetReady) on(); else _sheetWaiters.add(on);
     this._sheetOn = on;
     fl.mesh.onBeforeRender = (r, s, cam) => {
-      cam.getWorldPosition(this._camPos);
-      LIGHT_GAIN.value = r.xr.isPresenting ? 1 : 0.3;
+      this.group.worldToLocal(cam.getWorldPosition(this._camPos)); // flame budget works in the sim's space
+      LIGHT_GAIN.value = this.surfaceLight ?? (r.xr.isPresenting ? 1 : 0.3);
     };
     this.group.add(fl.mesh);
 
     // embers + falling burning bits (additive) and smoke rising off the flames
-    const e = makePoints(EMBER_N, glowTexture(), 'additive');
-    this._em = { ...e, vel: new Float32Array(EMBER_N * 3), age: new Float32Array(EMBER_N).fill(1), life: new Float32Array(EMBER_N).fill(1), kind: new Uint8Array(EMBER_N), seed: new Float32Array(EMBER_N).map(() => Math.random() * 50), floor: new Float32Array(EMBER_N), acc: 0 };
+    const e = makePoints(EN, glowTexture(), 'additive');
+    this._em = { ...e, vel: new Float32Array(EN * 3), age: new Float32Array(EN).fill(1), life: new Float32Array(EN).fill(1), kind: new Uint8Array(EN), seed: new Float32Array(EN).map(() => Math.random() * 50), floor: new Float32Array(EN), acc: 0 };
     e.pts.renderOrder = 12;
     this.group.add(e.pts);
-    const sm = makePoints(SMOKE_N, puffTexture(), 'normal');
-    this._sm = { ...sm, vel: new Float32Array(SMOKE_N * 3), age: new Float32Array(SMOKE_N).fill(1), life: new Float32Array(SMOKE_N).fill(1), shade: new Float32Array(SMOKE_N), base: new Float32Array(SMOKE_N), acc: 0 };
+    const sm = makePoints(SN, puffTexture(), 'normal');
+    this._sm = { ...sm, vel: new Float32Array(SN * 3), age: new Float32Array(SN).fill(1), life: new Float32Array(SN).fill(1), shade: new Float32Array(SN), base: new Float32Array(SN), acc: 0 };
     sm.pts.renderOrder = 11;
     this.group.add(sm.pts);
 
@@ -1469,8 +1493,8 @@ export class FireSystem {
   }
 
   /** Use an unlabeled scan mesh (e.g. the room OBJ) as fuel: see surfacesFromMesh() */
-  setFuelMesh(root) {
-    const surfaces = surfacesFromMesh(root);
+  setFuelMesh(root, options) {
+    const surfaces = surfacesFromMesh(root, options);
     this.setSurfaces(surfaces);
     return surfaces;
   }
@@ -1478,10 +1502,10 @@ export class FireSystem {
   /** ExitSign list (kept by reference): open exits keep a clear zone. Without it, every ExitSign in a scene counts. */
   setExits(exits) { this._exitsSet = true; this.sim.setExits(exits); }
 
-  /** Start a fire at a world position (snaps to the nearest fuel within 0.6 m) */
-  ignite(pos) {
+  /** Start a fire at a position (snaps to the nearest fuel within 0.6 m; { pile: true } = a burning object there) */
+  ignite(pos, { pile = false } = {}) {
     const v = this.sim.version;
-    const i = this.sim.ignite(pos);
+    const i = this.sim.ignite(pos, 0.25, pile);
     if (this.sim.version !== v) this._rebuildSurfaces();
     this._writeFlames();
     this._writeSurfaces();
@@ -1690,7 +1714,7 @@ export class FireSystem {
     const near = s.burning.filter((i) => (s.x[i] - h.position.x) ** 2 + (s.z[i] - h.position.z) ** 2 < r * r);
     if (!near.length) return;
     let sparks = 30, puffs = 10;
-    for (let k = 0; k < EMBER_N && sparks > 0; k++) {
+    for (let k = 0; k < this._emN && sparks > 0; k++) {
       if (em.age[k] < em.life[k]) continue;
       const i = near[(Math.random() * near.length) | 0];
       const fh = MATS[s.mat[i]].flameH * s.burn[i];
@@ -1703,7 +1727,7 @@ export class FireSystem {
       em.life[k] = 1.2 + Math.random() * 1.6;
       sparks--;
     }
-    for (let k = 0; k < SMOKE_N && puffs > 0; k++) {
+    for (let k = 0; k < this._smN && puffs > 0; k++) {
       if (sm.age[k] < sm.life[k]) continue;
       const i = near[(Math.random() * near.length) | 0];
       const fh = MATS[s.mat[i]].flameH * (0.3 + 0.7 * s.burn[i]);
@@ -1727,7 +1751,7 @@ export class FireSystem {
   _spawnDrop(d) {
     const em = this._em;
     let slot = -1;
-    for (let k = 0; k < EMBER_N; k++) if (em.age[k] >= em.life[k]) { slot = k; break; }
+    for (let k = 0; k < this._emN; k++) if (em.age[k] >= em.life[k]) { slot = k; break; }
     if (slot < 0) return;
     em.kind[slot] = 1;
     em.pos[slot * 3] = d.x; em.pos[slot * 3 + 1] = d.y; em.pos[slot * 3 + 2] = d.z;
@@ -1742,10 +1766,10 @@ export class FireSystem {
     // sparks: more with more fire
     let fire = 0;
     for (const h of s.hotspots) fire += h.area;
-    em.acc += dt * Math.min(45, s.burning.length ? 3 + 30 * fire : 0);
+    em.acc += dt * Math.min(45, s.burning.length ? 3 + 30 * fire : 0) * (this._emN / EMBER_N);
     let alive = 0;
     const P = em.pos, C = em.col, Z = em.size, Vv = em.vel;
-    for (let k = 0; k < EMBER_N; k++) {
+    for (let k = 0; k < this._emN; k++) {
       if (em.age[k] >= em.life[k] && em.acc >= 1) {
         const i = this._randomBurning();
         if (i < 0) { em.acc = 0; continue; }
@@ -1794,10 +1818,10 @@ export class FireSystem {
   _updateSmoke(dt) {
     const s = this.sim, sm = this._sm, t = this.time;
     const ceil = s.ceilingY;
-    sm.acc += dt * Math.min(70, s.burning.length ? 6 + 22 * s.totalIntensity : 0);
+    sm.acc += dt * Math.min(70, s.burning.length ? 6 + 22 * s.totalIntensity : 0) * (this._smN / SMOKE_N);
     let alive = 0;
     const P = sm.pos, C = sm.col, Z = sm.size, Vv = sm.vel;
-    for (let k = 0; k < SMOKE_N; k++) {
+    for (let k = 0; k < this._smN; k++) {
       if (sm.age[k] >= sm.life[k] && sm.acc >= 1) {
         const i = this._randomBurning();
         if (i < 0) { sm.acc = 0; continue; }
@@ -2443,13 +2467,108 @@ export class ExitSign {
   }
 }
 
-// Vision Pro drill hook, called by eileen-xr.js. ponytail: stub until Varnika fills it in.
-// roomRoot = the scan group (scan coordinates); returned positions are XR world coordinates.
+// ---------------------------------------------------------------------
+// Vision Pro drill hook, called by eileen-xr.js (README section 7, "Vision Pro drill hooks").
+// roomRoot = the scan group: its matrix maps scan coordinates → XR world. The fire and smoke are
+// parented to it, so they stay on the scan wherever it's aligned; positions given to and kept by
+// the sim are scan coordinates, and worldFires() converts to XR world.
+// The scan is unlit (baked textures), so engine lights can't touch it: the firelight is injected into
+// its materials instead, and the smoke fills the space above the scan's floor.
+// ---------------------------------------------------------------------
+
+// visionOS Safari frame budget: everything that trades looks for frame rate, in one place
+const XR_QUALITY = { maxFlames: 140, embers: 80, smoke: 200, smokePuffs: 120, smokeLayers: 3 };
+
+// Warm, flickering firelight on unlit (MeshBasic) scan materials, from the fire's 4 lights.
+// Multiplies the scan's own colours, so walls and floor near the fire glow orange like real firelight.
+function tintWithFirelight(scan, roomRoot, lights) {
+  const inv = new THREE.Matrix4().copy(roomRoot.matrixWorld).invert();
+  scan.traverse((o) => {
+    if (!o.isMesh) return;
+    const toScan = { value: new THREE.Matrix4().multiplyMatrices(inv, o.matrixWorld) };
+    for (const mat of Array.isArray(o.material) ? o.material : [o.material]) {
+      if (!mat || mat.userData.firelight) continue;
+      mat.userData.firelight = true;
+      mat.onBeforeCompile = (sh) => {
+        sh.uniforms.uFireLights = lights;
+        sh.uniforms.uFireToScan = toScan;
+        sh.vertexShader = 'uniform mat4 uFireToScan;\nvarying vec3 vFireScan;\n' + sh.vertexShader.replace(
+          '#include <begin_vertex>', '#include <begin_vertex>\n  vFireScan = (uFireToScan * vec4(transformed, 1.0)).xyz;');
+        sh.fragmentShader = `uniform vec4 uFireLights[${MAX_LIGHTS}];\nvarying vec3 vFireScan;\n` + sh.fragmentShader.replace(
+          '#include <opaque_fragment>', `{
+    float lit = 0.0;
+    for (int k = 0; k < ${MAX_LIGHTS}; k++) {
+      vec3 d = uFireLights[k].xyz - vFireScan;
+      lit += uFireLights[k].w / (1.0 + dot(d, d) * 1.2);
+    }
+    outgoingLight *= 1.0 + vec3(1.0, 0.42, 0.12) * min(lit, 1.2) * 1.4;
+  }
+  #include <opaque_fragment>`);
+      };
+      mat.customProgramCacheKey = () => 'firelight';
+      mat.needsUpdate = true;
+    }
+  });
+}
+
 export function createXRFire(roomRoot, camera) {
-  return {
-    ignite(roomPos) {},              // roomPos [x, y, z] in scan coordinates
-    update(dt, running) { return 0; }, // smoke depth at the head, 0–1
-    worldFires() { return []; },     // THREE.Vector3[] for heat and the voice agent
-    reset() {},
+  const fire = new FireSystem(roomRoot, {
+    maxFlames: XR_QUALITY.maxFlames, embers: XR_QUALITY.embers, smoke: XR_QUALITY.smoke,
+    surfaceLight: 0.15, // the scan itself carries the firelight (tintWithFirelight)
+    edgeOver: 0.5,      // opaque scan, not passthrough: additive edges would tint its grey-blue walls green
+  });
+  const smoke = new Smoke(roomRoot, camera, { size: 18, layers: XR_QUALITY.smokeLayers, puffs: XR_QUALITY.smokePuffs });
+  const head = new THREE.Vector3();
+  let fueled = false, burning = false, pending = null;
+
+  // the scan loads asynchronously: build its fuel the first time a fire needs it
+  const fuel = () => {
+    if (fueled) return true;
+    const scan = findScanMesh(roomRoot);
+    if (!scan) return false;
+    fire.setFuelMesh(scan, { relativeTo: roomRoot });
+    tintWithFirelight(scan, roomRoot, fire._lightU);
+    const s = fire.sim;
+    smoke.minY = s.floorY + 1.1;        // smoke heights are above the scan's floor, not its origin
+    smoke.headHeight = s.floorY + 1.6;
+    smoke.setCenter(s.center.x, s.center.z);
+    fueled = true;
+    return true;
   };
+
+  const api = {
+    fire, smoke,
+    /** Start the fire at [x, y, z] in scan coordinates (snaps to the nearest fuel) */
+    ignite(scanPos) {
+      const p = { x: scanPos[0], y: scanPos[1], z: scanPos[2] };
+      if (!fuel()) { pending = p; return; } // scan still loading: lit when it arrives
+      // the marker is usually on the floor, and carpet alone burns low: start a burning object there,
+      // which then lights the floor and the furniture around it
+      fire.ignite(p, { pile: true });
+      if (!burning) { smoke.start(fire.ceilingY); fire.startSound(); }
+      burning = true;
+    },
+    /** Step fire + smoke; returns how deep the head is in smoke (0–1) */
+    update(dt, running) {
+      if (pending && fuel()) { const p = pending; pending = null; api.ignite([p.x, p.y, p.z]); }
+      fire.update(dt, { running });
+      smoke.active = burning && running; // the smoke drops during the drill and holds after it
+      camera.getWorldPosition(head);
+      roomRoot.worldToLocal(head);
+      return smoke.update(dt, head.y, fire);
+    },
+    /** Fire positions in XR world, biggest first (for the DataFeel heat and the voice agent) */
+    worldFires() {
+      return fire.hotspots.map((h) => roomRoot.localToWorld(h.position.clone()));
+    },
+    /** Put the fire out and clear the smoke (keeps the fuel) */
+    reset() {
+      pending = null;
+      burning = false;
+      fire.stopSound();
+      fire.reset();
+      smoke.reset();
+    },
+  };
+  return api;
 }
