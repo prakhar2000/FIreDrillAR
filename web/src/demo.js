@@ -60,7 +60,7 @@ const signs = [];      // ExitSign
 let start = new THREE.Vector3(4.4, FLOOR, 7);
 let tool = null, drillOn = false, done = false, speed = 1, crouch = false, ignited = false;
 let yaw = 0, pitch = -0.1, eye = 1.6;
-let hud = null, heatOn = false;
+let hud = null, heatOn = true, testUntil = 0, idleSent = false;
 
 const startMarker = new THREE.Mesh(new THREE.RingGeometry(0.22, 0.32, 40).rotateX(-Math.PI / 2),
   new THREE.MeshBasicMaterial({ color: new THREE.Color(0.5, 0.75, 2), toneMapped: false, transparent: true, depthWrite: false }));
@@ -268,7 +268,26 @@ $('#again').addEventListener('click', () => { $('#review').style.display = 'none
 $('#reset').addEventListener('click', resetAll);
 $('#coachBtn').addEventListener('click', askCoach);
 $('#speed').addEventListener('click', toggleSpeed);
-$('#dots').addEventListener('change', (e) => { heatOn = e.target.checked; if (heatOn) connectHeat(); });
+$('#dots').addEventListener('change', (e) => {
+  heatOn = e.target.checked;
+  if (heatOn) connectHeat(); else sendHeat({ left: 0, right: 0, buzz: false, cool: false });
+});
+$('#testDots').addEventListener('click', testDots);
+function testDots() { $('#dots').checked = heatOn = true; connectHeat(); testUntil = t + 3; }
+connectHeat();
+// what the server sees: "4 Dot(s), …" or "no Dots (El Jefe plugged in and powered?)"
+async function pollDots() {
+  let text = 'server unreachable (/py/health)', ok = false;
+  try {
+    const j = await (await fetch('/py/health', { signal: AbortSignal.timeout(2500) })).json();
+    text = j.dots ?? 'server has no Dots driver';
+    ok = /Dot\(s\)/.test(text);
+  } catch { /* keep the unreachable text */ }
+  $('#dotsStatus').textContent = `Dots: ${text}`;
+  $('#dotsStatus').style.color = ok ? 'var(--exit)' : 'var(--blocked)';
+}
+pollDots();
+setInterval(pollDots, 3000);
 function toggleSpeed() { speed = speed === 1 ? 2 : speed === 2 ? 4 : 1; $('#speed').firstChild.textContent = `Fire ${speed}× `; }
 // Run again: relight the same fire spot, keep the signs
 function loadExampleKeepLayout() { if (lastFire) ignite(lastFire); startDrill(); }
@@ -286,6 +305,7 @@ addEventListener('keydown', (e) => {
   if (e.code === 'KeyR') resetAll();
   if (e.code === 'KeyF') toggleSpeed();
   if (e.code === 'KeyQ') askCoach();
+  if (e.code === 'KeyT') testDots();
   if (e.code === 'KeyC' && drillOn) crouch = !crouch;
   if (e.code === 'Escape' && drillOn) stopDrill('Drill stopped.');
 });
@@ -336,6 +356,7 @@ renderer.setAnimationLoop((time) => {
     if (state.escaped || state.timedOut) finish(state);
   }
   if (done && $('#rvTitle').textContent === 'Escaped') cool = true;
+  if (t < testUntil) heat = { left: 1, right: 1 };
   const temp = (h) => (h > 0.05 ? `${(33 + 5 * h).toFixed(1)}°C` : '—');
   $('#hl').style.width = `${heat.left * 100}%`;
   $('#hr').style.width = `${heat.right * 100}%`;
@@ -343,7 +364,9 @@ renderer.setAnimationLoop((time) => {
   $('#tr').textContent = cool ? '20°C' : temp(heat.right);
   $('#hstate').textContent = cool ? 'cool pulse' : buzz ? 'BUZZ · smoke' : heat.left + heat.right > 0.05 ? 'warming' : 'idle';
   $('#hstate').style.color = cool ? 'var(--cool)' : buzz ? 'var(--blocked)' : 'var(--fg)';
-  if (heatOn && (drillOn || cool)) sendHeat({ ...heat, buzz, cool });
+  const active = drillOn || cool || t < testUntil;
+  if (heatOn && active) { sendHeat({ ...heat, buzz, cool }); idleSent = false; }
+  else if (heatOn && !idleSent) { sendHeat({ left: 0, right: 0, buzz: false, cool: false }); idleSent = true; } // pads off
 
   bloom.render();
 });
