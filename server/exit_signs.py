@@ -3,7 +3,7 @@
     py exit_signs.py "../10_17_2026"          (Mac: python3 exit_signs.py ../10_17_2026)
     py exit_signs.py --selftest
 
-Writes data/exit_signs.json: { roomId, items: [{ type: 'exit', position, normal, source, confidence }] }
+Writes data/exit_signs.json: { roomId, items: [{ type: 'exit', position, normal, source, texture, box, confidence }] }
 in scan (original OBJ) coordinates, the same item shape as the observer annotations.
 Claude answers are cached per image tile in server/exit_signs_cache.json (gitignored), so reruns are free.
 """
@@ -152,6 +152,9 @@ def main(folder):
                 if hit:
                     found.append({"type": "exit", "position": [round(v, 3) for v in hit[0]],
                                   "normal": [round(v, 3) for v in hit[1]], "source": "vision",
+                                  "texture": tex.name,   # box: normalized to the full texture, y down
+                                  "box": [round((x + x0 * w) / W, 4), round((y + y0 * h) / H, 4),
+                                          round((x + x1 * w) / W, 4), round((y + y1 * h) / H, 4)],
                                   "confidence": float(s.get("confidence", 0.5))})
     items = []   # merge repeats (tile overlap, a sign split across atlas patches); keep the most confident
     for f in sorted(found, key=lambda f: -f["confidence"]):
