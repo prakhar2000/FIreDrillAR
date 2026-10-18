@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FireDrill AR — live demo</title>
+    <style>
+      :root { --bg: #120f0d; --panel: rgba(18, 15, 13, 0.86); --fg: #f4eee8; --muted: #b9ada2; --fire: #ff6a2b; --exit: #34e07c; --blocked: #ff3b3b; --cool: #5cc8ff; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--fg); font: 15px/1.45 Arial, system-ui, sans-serif; }
+      canvas { display: block; }
+      .panel { position: fixed; background: var(--panel); border: 1px solid rgba(244, 238, 232, 0.16); border-radius: 12px; backdrop-filter: blur(6px); }
+      #side { left: 16px; top: 16px; width: 290px; padding: 18px; display: flex; flex-direction: column; gap: 10px; max-height: calc(100% - 32px); overflow: auto; }
+      #side h1 { margin: 0; font-size: 22px; letter-spacing: 0.02em; }
+      #side h1 b { background: var(--fire); color: var(--bg); padding: 0 6px; border-radius: 4px; margin-left: 4px; }
+      #side .sub { color: var(--muted); font-size: 13px; margin-top: -4px; }
+      .step { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin-top: 6px; }
+      button { font: inherit; color: var(--fg); background: rgba(244, 238, 232, 0.07); border: 1px solid rgba(244, 238, 232, 0.2); border-radius: 8px; padding: 9px 12px; cursor: pointer; text-align: left; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+      button:hover { background: rgba(244, 238, 232, 0.14); }
+      button:disabled { opacity: 0.4; cursor: default; }
+      button.on { border-color: var(--fire); background: rgba(255, 106, 43, 0.18); }
+      button kbd { font: 11px Arial, sans-serif; color: var(--muted); border: 1px solid rgba(244, 238, 232, 0.25); border-radius: 4px; padding: 1px 6px; }
+      button.primary { background: var(--fire); color: #1a0f08; border-color: var(--fire); font-weight: bold; }
+      button.primary kbd { color: #1a0f08; border-color: rgba(26, 15, 8, 0.4); }
+      .row { display: flex; gap: 8px; } .row button { flex: 1; justify-content: center; }
+      .sw { width: 10px; height: 10px; border-radius: 2px; display: inline-block; margin-right: 8px; }
+      #status { position: fixed; left: 50%; top: 16px; transform: translateX(-50%); padding: 10px 18px; font-size: 15px; max-width: 760px; text-align: center; }
+      #coach { left: 50%; bottom: 20px; transform: translateX(-50%); width: min(760px, calc(100% - 640px)); min-width: 420px; padding: 16px 20px; display: none; }
+      #coach .who { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+      #coach .text { font-size: 20px; font-weight: bold; }
+      #wrists { right: 16px; bottom: 16px; width: 290px; padding: 16px; }
+      #wrists .t { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; display: flex; justify-content: space-between; }
+      .wr { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
+      .wr span { width: 46px; color: var(--muted); font-size: 13px; }
+      .bar { flex: 1; height: 14px; border-radius: 7px; background: rgba(244, 238, 232, 0.1); overflow: hidden; }
+      .bar i { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, #ffb347, var(--fire)); transition: width 0.15s; }
+      .wr b { width: 52px; text-align: right; font-size: 13px; }
+      #hstate { font-weight: bold; }
+      #review { left: 50%; top: 50%; transform: translate(-50%, -50%); width: 460px; padding: 26px 28px; display: none; text-align: center; }
+      #review h2 { margin: 0 0 14px; font-size: 34px; }
+      #review .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 18px; }
+      #review .grid div { background: rgba(244, 238, 232, 0.06); border-radius: 10px; padding: 12px; }
+      #review .grid small { display: block; color: var(--muted); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; }
+      #review .grid b { font-size: 30px; }
+      #review button { justify-content: center; width: 100%; }
+      #loading { position: fixed; inset: 0; display: grid; place-items: center; background: var(--bg); font-size: 18px; z-index: 10; }
+      .credit { color: var(--muted); font-size: 11px; margin-top: 6px; }
+    </style>
+  </head>
+  <body>
+    <div id="loading">Loading the 10_17_2026 room scan…</div>
+    <div id="side" class="panel">
+      <h1>FireDrill<b>AR</b></h1>
+      <div class="sub">Live demo on our real room scan</div>
+      <button id="example" class="primary">Load example drill <kbd>E</kbd></button>
+      <div class="step">1 · Build the drill</div>
+      <button data-tool="fire"><span><i class="sw" style="background:var(--fire)"></i>Place fire</span><kbd>1</kbd></button>
+      <button data-tool="exit"><span><i class="sw" style="background:var(--exit)"></i>Mark exit</span><kbd>2</kbd></button>
+      <button data-tool="blocked"><span><i class="sw" style="background:var(--blocked)"></i>Mark blocked door</span><kbd>3</kbd></button>
+      <button data-tool="start"><span><i class="sw" style="background:#7aa7ff"></i>Set trainee start</span><kbd>4</kbd></button>
+      <div class="step">2 · Run it</div>
+      <button id="drill" class="primary">Start drill <kbd>Space</kbd></button>
+      <button id="coachBtn" disabled>Ask the voice coach <kbd>Q</kbd></button>
+      <div class="row"><button id="speed">Fire 1× <kbd>F</kbd></button><button id="reset">Reset <kbd>R</kbd></button></div>
+      <label style="font-size:13px;color:var(--muted);display:flex;gap:8px;align-items:center;margin-top:4px">
+        <input type="checkbox" id="dots" /> Send heat to the DataFeel Dots</label>
+      <div class="credit">Drill: WASD walk · drag to look · C crouch · Esc stop. Flames: Unity Labs, CC0.</div>
+    </div>
+    <div id="status" class="panel">Click “Load example drill”, or place a fire on the scan.</div>
+    <div id="coach" class="panel"><div class="who">Voice coach · Claude</div><div class="text"></div></div>
+    <div id="wrists" class="panel">
+      <div class="t"><span>DataFeel wrists</span><span id="hstate">idle</span></div>
+      <div class="wr"><span>Left</span><div class="bar"><i id="hl"></i></div><b id="tl">—</b></div>
+      <div class="wr"><span>Right</span><div class="bar"><i id="hr"></i></div><b id="tr">—</b></div>
+    </div>
+    <div id="review" class="panel">
+      <h2 id="rvTitle">Escaped</h2>
+      <div class="grid">
+        <div><small>Escape time</small><b id="rvTime">0:00</b></div>
+        <div><small>Oxygen left</small><b id="rvOx">100%</b></div>
+        <div><small>Time in smoke</small><b id="rvSmoke">0.0 s</b></div>
+        <div><small>Stayed low</small><b id="rvLow">0%</b></div>
+      </div>
+      <button id="again" class="primary">Run it again</button>
+    </div>
+    <script type="module" src="/src/demo.js"></script>
+  </body>
+</html>
