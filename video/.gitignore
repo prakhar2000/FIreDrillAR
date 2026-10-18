@@ -1,0 +1,5 @@
+capture/frames/
+renders/
+assets/*.mp4
+.hyperframes/
+.thumbnails/

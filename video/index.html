@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>FireDrill AR — pitch video</title>
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      :root {
+        --bg: #120f0d;
+        --fg: #f4eee8;
+        --muted: #c9bdb2;
+        --fire: #ff6a2b;
+        --exit: #34e07c;
+        --blocked: #ff3b3b;
+        --cool: #5cc8ff;
+      }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 1920px; height: 1080px; overflow: hidden; background: var(--bg); }
+      #root {
+        position: relative; width: 100%; height: 100%; overflow: hidden;
+        background: var(--bg); color: var(--fg); font-family: Montserrat, sans-serif;
+      }
+      /* footage: untimed wrappers carry the camera moves, the timed <video> inside carries the timing */
+      .vwrap { position: absolute; inset: 0; overflow: hidden; z-index: 1; }
+      .vwrap video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+      .vwrap.left { right: 50%; }
+      .scene { z-index: 5; }
+      .clip { position: absolute; inset: 0; }
+
+      .h-display { font-family: Oswald, sans-serif; font-weight: 700; text-transform: uppercase; line-height: 1.02; letter-spacing: 0.01em; }
+      .mono { font-family: "IBM Plex Mono", monospace; letter-spacing: 0.08em; text-transform: uppercase; }
+      .chip {
+        display: inline-flex; align-items: center; gap: 14px; padding: 10px 20px; border-radius: 6px;
+        background: rgba(18, 15, 13, 0.82); border: 2px solid rgba(255, 106, 43, 0.7); color: var(--fg); font-size: 24px;
+      }
+      .chip b { color: var(--fire); font-weight: 700; }
+      .scrim-bl {
+        position: absolute; left: 0; bottom: 0; width: 1300px; height: 560px;
+        background: radial-gradient(ellipse at 0% 100%, rgba(12, 9, 8, 0.92) 0%, rgba(12, 9, 8, 0.7) 45%, rgba(12, 9, 8, 0) 75%);
+      }
+      .lower { position: absolute; left: 110px; bottom: 100px; width: 1100px; display: flex; flex-direction: column; gap: 22px; }
+      .lower h2 { font-size: 92px; }
+      .lower p { font-size: 34px; line-height: 1.4; color: var(--fg); max-width: 960px; }
+      .glow { position: absolute; border-radius: 50%; pointer-events: none; }
+
+      /* S1 problem */
+      #s1-bg { filter: blur(14px) saturate(1.1); opacity: 0.32; transform: scale(1.08); }
+      #s1 .lines { position: absolute; left: 140px; top: 210px; width: 1500px; display: flex; flex-direction: column; gap: 34px; }
+      #s1 .line { font-size: 104px; }
+      #s1 .line em { font-style: normal; color: var(--fire); }
+      #s1 .kicker { position: absolute; left: 144px; top: 120px; font-size: 24px; color: var(--muted); }
+      #s1 .rule { position: absolute; left: 144px; top: 166px; width: 420px; height: 4px; background: var(--fire); transform-origin: left center; }
+
+      /* S2 title */
+      #s2 .center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 36px; }
+      #s2 .word { display: flex; align-items: center; gap: 30px; font-size: 230px; }
+      #s2 .ar { display: block; background: var(--fire); color: var(--bg); padding: 0 34px; border-radius: 14px; }
+      #s2 .tag { font-size: 42px; color: var(--fg); width: 1300px; text-align: center; line-height: 1.35; }
+      #s2 .ghost { position: absolute; left: -40px; bottom: -70px; font-size: 400px; color: rgba(255, 106, 43, 0.12); white-space: nowrap; }
+
+      /* S3 scan readout */
+      .readout {
+        position: absolute; right: 90px; top: 90px; padding: 26px 32px; border-radius: 10px; width: 520px;
+        background: rgba(18, 15, 13, 0.82); border: 2px solid rgba(244, 238, 232, 0.25); display: flex; flex-direction: column; gap: 12px;
+      }
+      .readout div { display: flex; justify-content: space-between; font-size: 22px; color: var(--muted); }
+      .readout div b { color: var(--fg); font-weight: 700; }
+
+      /* S4 voice card */
+      .card {
+        position: absolute; padding: 30px 36px; border-radius: 14px; background: rgba(18, 15, 13, 0.88);
+        border: 2px solid rgba(244, 238, 232, 0.22); display: flex; flex-direction: column; gap: 16px;
+      }
+      #s4 .voice { left: 110px; top: 100px; width: 640px; }
+      .card .label { font-size: 22px; color: var(--muted); display: flex; align-items: center; gap: 14px; }
+      .card .quote { font-family: Oswald, sans-serif; font-weight: 700; font-size: 64px; line-height: 1.1; }
+      .card .sub { font-size: 26px; color: var(--muted); line-height: 1.4; }
+      .dot-rec { display: block; width: 18px; height: 18px; border-radius: 50%; background: var(--fire); }
+      #s4 .cap2 { opacity: 0; }
+
+      /* S5 legend */
+      #s5 .legend { position: absolute; right: 90px; top: 90px; width: 560px; }
+      .legend-row { display: flex; align-items: center; gap: 22px; font-size: 28px; }
+      .sign {
+        display: block; min-width: 150px; text-align: center; padding: 8px 14px; border-radius: 6px; font-family: Oswald, sans-serif;
+        font-weight: 700; font-size: 30px; color: #fff;
+      }
+      .sign.exit { background: #13a04f; box-shadow: 0 0 26px rgba(52, 224, 124, 0.7); }
+      .sign.blocked { background: #c81e1e; box-shadow: 0 0 26px rgba(255, 59, 59, 0.6); }
+      .sign.route { background: transparent; color: var(--exit); font-size: 34px; letter-spacing: -0.1em; }
+
+      /* S6 coach */
+      #s6 .coach { right: 90px; top: 110px; width: 760px; gap: 22px; }
+      #s6 .ask { align-self: flex-end; background: rgba(244, 238, 232, 0.12); border-radius: 14px 14px 4px 14px; padding: 16px 22px; font-size: 30px; }
+      #s6 .reply { font-size: 42px; line-height: 1.35; font-weight: 700; }
+      #s6 .reply span { opacity: 0; }
+      #s6 .reply .hl { color: var(--exit); }
+      #s6 .reply .hl2 { color: var(--fire); }
+      .wave { display: flex; align-items: center; gap: 7px; height: 70px; }
+      .wave i { display: block; width: 10px; height: 70px; border-radius: 5px; background: var(--fire); transform: scaleY(0.15); }
+      #s6 .foot { position: absolute; right: 90px; bottom: 80px; width: 760px; font-size: 20px; color: var(--muted); text-align: right; }
+
+      /* S7 haptics */
+      #s7 .panel { position: absolute; left: 960px; top: 0; width: 960px; height: 1080px; background: var(--bg); }
+      #s7 .head { position: absolute; left: 1040px; top: 100px; width: 820px; display: flex; flex-direction: column; gap: 20px; }
+      #s7 .head h2 { font-size: 80px; }
+      #s7 .wrists { position: absolute; left: 1040px; top: 420px; width: 820px; height: 360px; }
+      #s7 .phase { position: absolute; left: 1040px; top: 820px; width: 820px; height: 170px; }
+      #s7 .phase > div { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 10px; opacity: 0; }
+      #s7 .phase h3 { font-family: Oswald, sans-serif; font-weight: 700; font-size: 54px; text-transform: uppercase; }
+      #s7 .phase p { font-size: 28px; color: var(--muted); }
+      #s7 .vlabel { position: absolute; left: 60px; bottom: 70px; }
+      .band { position: absolute; top: 40px; width: 360px; height: 260px; border-radius: 40px; border: 4px solid rgba(244, 238, 232, 0.35); background: rgba(244, 238, 232, 0.04); }
+      .band .side { position: absolute; left: 0; right: 0; top: -54px; text-align: center; font-size: 24px; color: var(--muted); }
+      .band .temp { position: absolute; left: 0; right: 0; bottom: -56px; text-align: center; font-size: 30px; font-weight: 700; }
+      .dotc { position: absolute; top: 70px; width: 120px; height: 120px; border-radius: 50%; background: #5a524c; border: 4px solid rgba(244, 238, 232, 0.5); }
+      .halo { position: absolute; top: 20px; width: 220px; height: 220px; border-radius: 50%; opacity: 0; }
+      .halo.warm { background: radial-gradient(circle, rgba(255, 106, 43, 0.85) 0%, rgba(255, 106, 43, 0) 70%); }
+      .halo.cool { background: radial-gradient(circle, rgba(92, 200, 255, 0.85) 0%, rgba(92, 200, 255, 0) 70%); }
+      .fireicon { position: absolute; right: -10px; top: 120px; font-family: Oswald, sans-serif; font-weight: 700; font-size: 30px; color: var(--fire); }
+
+      /* S8 review */
+      #s8 .panel { position: absolute; left: 960px; top: 0; width: 960px; height: 1080px; background: var(--bg); }
+      #s8 .head { position: absolute; left: 1040px; top: 100px; width: 800px; display: flex; flex-direction: column; gap: 20px; }
+      #s8 .head h2 { font-size: 80px; }
+      #s8 .stats { position: absolute; left: 1040px; top: 400px; width: 800px; display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
+      .stat { padding: 28px 30px; border-radius: 12px; background: rgba(244, 238, 232, 0.06); border: 2px solid rgba(244, 238, 232, 0.18); display: flex; flex-direction: column; gap: 10px; }
+      .stat .k { font-size: 22px; color: var(--muted); }
+      .stat .v { font-family: Oswald, sans-serif; font-weight: 700; font-size: 96px; line-height: 1; font-variant-numeric: tabular-nums; }
+      .stat .v.ok { color: var(--exit); }
+      .stat .v.warn { color: var(--fire); }
+
+      /* S9 close */
+      #s9 .lines { position: absolute; left: 140px; top: 300px; width: 1640px; display: flex; flex-direction: column; gap: 24px; }
+      #s9 .l { font-size: 128px; }
+      #s9 .l em { font-style: normal; color: var(--fire); }
+      #s9 .end { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 46px; opacity: 0; }
+      #s9 .word { display: flex; align-items: center; gap: 22px; font-size: 150px; }
+      #s9 .team { font-size: 40px; font-weight: 700; display: flex; gap: 46px; }
+      #s9 .tech { display: flex; gap: 18px; flex-wrap: wrap; justify-content: center; width: 1500px; }
+      #s9 .tech span { display: block; padding: 10px 20px; border: 2px solid rgba(244, 238, 232, 0.3); border-radius: 6px; font-size: 24px; }
+      #s9 .credit { font-size: 20px; color: var(--muted); }
+    </style>
+  </head>
+  <body>
+    <div data-hf-id="hf-dy4d" id="root" data-composition-id="main" data-start="0" data-duration="90" data-width="1920" data-height="1080">
+      <!-- ambient ember glow, behind everything -->
+      <div data-hf-id="hf-ctwp" id="ember" class="glow" style="left: 1100px; top: 300px; width: 1300px; height: 1300px; background: radial-gradient(circle, rgba(255,106,43,0.22) 0%, rgba(255,106,43,0) 65%); z-index: 0;"></div>
+
+      <!-- ===== footage ===== -->
+      <div data-hf-id="hf-d3lw" class="vwrap" id="w1"><video data-hf-id="hf-9nua" id="s1-bg" src="assets/07-crouch.mp4" muted playsinline data-start="0" data-duration="9" data-track-index="1"></video></div>
+      <div data-hf-id="hf-htdq" class="vwrap" id="w3"><video data-hf-id="hf-cqhv" id="v01" src="assets/01-scan-orbit.mp4" muted playsinline data-start="13" data-duration="9" data-track-index="1"></video></div>
+      <div data-hf-id="hf-x5mq" class="vwrap" id="w4a"><video data-hf-id="hf-5skn" id="v02" src="assets/02-ignite.mp4" muted playsinline data-start="22" data-duration="7" data-track-index="1"></video></div>
+      <div data-hf-id="hf-qzwx" class="vwrap" id="w4b"><video data-hf-id="hf-idu5" id="v03" src="assets/03-spread.mp4" muted playsinline data-start="29" data-duration="7" data-track-index="1"></video></div>
+      <div data-hf-id="hf-ppls" class="vwrap" id="w5"><video data-hf-id="hf-5pp4" id="v04" src="assets/04-signs-route.mp4" muted playsinline data-start="36" data-duration="7" data-track-index="1"></video></div>
+      <div data-hf-id="hf-0l3f" class="vwrap" id="w6"><video data-hf-id="hf-tuz7" id="v05" src="assets/05-pov-escape.mp4" muted playsinline data-start="43" data-duration="10" data-track-index="1"></video></div>
+      <div data-hf-id="hf-nl41" class="vwrap left" id="w7"><video data-hf-id="hf-dpdh" id="v07" src="assets/07-crouch.mp4" muted playsinline data-start="53" data-duration="9" data-track-index="1"></video></div>
+      <div data-hf-id="hf-la0u" class="vwrap left" id="w8"><video data-hf-id="hf-q7p2" id="v06" src="assets/06-review.mp4" muted playsinline data-start="66" data-duration="10" data-playback-rate="0.5" data-track-index="1"></video></div>
+
+      <!-- ===== sound: fire crackle under the drill, alarm at ignition (web/public/sounds) ===== -->
+      <audio data-hf-id="hf-kxsd" id="fire-a" src="assets/fire.mp3" data-start="22.6" data-duration="10" data-volume="0.45" data-track-index="6"></audio>
+      <audio data-hf-id="hf-2bcd" id="fire-b" src="assets/fire.mp3" data-start="32.6" data-duration="10" data-volume="0.4" data-track-index="7"></audio>
+      <audio data-hf-id="hf-idrd" id="fire-c" src="assets/fire.mp3" data-start="42.6" data-duration="10" data-volume="0.3" data-track-index="6"></audio>
+      <audio data-hf-id="hf-84fu" id="alarm" src="assets/alarm.mp3" data-start="22.8" data-duration="3" data-volume="0.35" data-track-index="8"></audio>
+
+      <!-- ===== S1 problem ===== -->
+      <section data-hf-id="hf-w4hv" id="s1" class="clip scene" data-start="0" data-duration="9" data-track-index="2">
+        <div data-hf-id="hf-qobo" class="kicker mono" id="s1-kicker">The problem</div>
+        <div data-hf-id="hf-dgpv" class="rule" id="s1-rule"></div>
+        <div data-hf-id="hf-qvs1" class="lines">
+          <div data-hf-id="hf-5pr9" class="line h-display" id="s1-l1">Fire drills are a hallway walk.</div>
+          <div data-hf-id="hf-u461" class="line h-display" id="s1-l2">No smoke. No heat. No panic.</div>
+          <div data-hf-id="hf-5lgv" class="line h-display" id="s1-l3">So when it's real, nobody knows <em data-hf-id="hf-qrrp">the way out.</em></div>
+        </div>
+      </section>
+
+      <!-- ===== S2 title ===== -->
+      <section data-hf-id="hf-52oq" id="s2" class="clip scene" data-start="9" data-duration="4" data-track-index="2">
+        <div data-hf-id="hf-9d22" class="ghost h-display" id="s2-ghost">Any room</div>
+        <div data-hf-id="hf-0oij" class="center">
+          <div data-hf-id="hf-hfbd" class="word h-display" id="s2-word"><span data-hf-id="hf-c3f1" id="s2-fd">FireDrill</span><span data-hf-id="hf-3fos" class="ar" id="s2-ar">AR</span></div>
+          <div data-hf-id="hf-s6vb" class="tag" id="s2-tag">Turn any real room into a fire drill you can see, hear and feel.</div>
+        </div>
+      </section>
+
+      <!-- ===== S3 scan ===== -->
+      <section data-hf-id="hf-3mg3" id="s3" class="clip scene" data-start="13" data-duration="9" data-track-index="2">
+        <div data-hf-id="hf-wdol" class="scrim-bl"></div>
+        <div data-hf-id="hf-ppgm" class="readout mono" id="s3-read">
+          <div data-hf-id="hf-yeow"><span data-hf-id="hf-xrhr">Room scan</span><b data-hf-id="hf-8xic">10_17_2026</b></div>
+          <div data-hf-id="hf-y7yw"><span data-hf-id="hf-a6zu">Vertices</span><b data-hf-id="hf-jco0">87,747</b></div>
+          <div data-hf-id="hf-x11t"><span data-hf-id="hf-txim">Triangles</span><b data-hf-id="hf-4bvc">139,251</b></div>
+          <div data-hf-id="hf-xfcu"><span data-hf-id="hf-3hi1">Textures</span><b data-hf-id="hf-8w6r">2 × baked light</b></div>
+        </div>
+        <div data-hf-id="hf-d9jj" class="lower">
+          <div data-hf-id="hf-w8fr"><span data-hf-id="hf-n7d8" class="chip mono" id="s3-chip"><b data-hf-id="hf-27a2">01</b> Scan the room</span></div>
+          <h2 data-hf-id="hf-fo0x" class="h-display" id="s3-h">Your real room, scanned.</h2>
+          <p data-hf-id="hf-uoa5" id="s3-p">The headset's scan already knows the floor, the furniture and the doors. No 3D skills needed.</p>
+        </div>
+      </section>
+
+      <!-- ===== S4 ignite + spread ===== -->
+      <section data-hf-id="hf-ghp2" id="s4" class="clip scene" data-start="22" data-duration="14" data-track-index="2">
+        <div data-hf-id="hf-adnd" class="scrim-bl"></div>
+        <div data-hf-id="hf-1b6i" class="card voice" id="s4-voice">
+          <div data-hf-id="hf-939r" class="label mono"><span data-hf-id="hf-ra65" class="dot-rec" id="s4-rec"></span>Instructor · voice</div>
+          <div data-hf-id="hf-9mdj" class="quote">“Fire on the counter.”</div>
+          <div data-hf-id="hf-cbcw" class="sub">…or pinch where it should start.</div>
+        </div>
+        <div data-hf-id="hf-urov" class="lower">
+          <div data-hf-id="hf-wmqs"><span data-hf-id="hf-c1jr" class="chip mono" id="s4-chip"><b data-hf-id="hf-2ll3">02</b> Start a fire</span></div>
+          <div data-hf-id="hf-ud0e" style="position: relative; height: 230px;">
+            <div data-hf-id="hf-hg0h" id="s4-cap1" style="position: absolute; inset: 0; display: flex; flex-direction: column; gap: 18px;">
+              <h2 data-hf-id="hf-5ygg" class="h-display">It catches.</h2>
+              <p data-hf-id="hf-440q">Flames start on the real kitchen counter in the scan.</p>
+            </div>
+            <div data-hf-id="hf-pnih" id="s4-cap2" class="cap2" style="position: absolute; inset: 0; display: flex; flex-direction: column; gap: 18px;">
+              <h2 data-hf-id="hf-5x3c" class="h-display">It spreads. Smoke drops.</h2>
+              <p data-hf-id="hf-uewe">Heat moves cell by cell to the floor and furniture; smoke banks down from the ceiling.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== S5 signs + route ===== -->
+      <section data-hf-id="hf-7tbi" id="s5" class="clip scene" data-start="36" data-duration="7" data-track-index="2">
+        <div data-hf-id="hf-bkkg" class="scrim-bl"></div>
+        <div data-hf-id="hf-8xtb" class="card legend" id="s5-legend">
+          <div data-hf-id="hf-084e" class="label mono">On the scan</div>
+          <div data-hf-id="hf-hy84" class="legend-row" id="s5-r1"><span data-hf-id="hf-7s8a" class="sign exit">EXIT</span><span data-hf-id="hf-r2if">Open exit</span></div>
+          <div data-hf-id="hf-qm3z" class="legend-row" id="s5-r2"><span data-hf-id="hf-q73e" class="sign blocked">BLOCKED</span><span data-hf-id="hf-l0hc">Door you can't use</span></div>
+          <div data-hf-id="hf-mnzy" class="legend-row" id="s5-r3"><span data-hf-id="hf-4qd9" class="sign route">&gt;&gt;&gt;&gt;</span><span data-hf-id="hf-wfsu">Route out, avoiding the fire</span></div>
+        </div>
+        <div data-hf-id="hf-uddu" class="lower">
+          <div data-hf-id="hf-vftp"><span data-hf-id="hf-rh32" class="chip mono" id="s5-chip"><b data-hf-id="hf-2zw4">03</b> Find the way out</span></div>
+          <h2 data-hf-id="hf-03wj" class="h-display" id="s5-h">Exits light up.</h2>
+          <p data-hf-id="hf-86pj" id="s5-p">EXIT and BLOCKED signs appear on the real doors, and arrows on the floor point the way.</p>
+        </div>
+      </section>
+
+      <!-- ===== S6 voice coach ===== -->
+      <section data-hf-id="hf-pp8p" id="s6" class="clip scene" data-start="43" data-duration="10" data-track-index="2">
+        <div data-hf-id="hf-b69f" class="scrim-bl"></div>
+        <div data-hf-id="hf-dax8" class="card coach" id="s6-coach">
+          <div data-hf-id="hf-dga2" class="label mono"><span data-hf-id="hf-ho2z" class="dot-rec"></span>Voice coach · Claude</div>
+          <div data-hf-id="hf-6n30" class="ask" id="s6-ask">“Which way do I go?”</div>
+          <div data-hf-id="hf-vrio" class="wave" id="s6-wave"><i data-hf-id="hf-wt6k"></i><i data-hf-id="hf-zeb8"></i><i data-hf-id="hf-y7e5"></i><i data-hf-id="hf-ylp6"></i><i data-hf-id="hf-0l8b"></i><i data-hf-id="hf-0zjc"></i><i data-hf-id="hf-zsm9"></i><i data-hf-id="hf-06xa"></i><i data-hf-id="hf-26gf"></i><i data-hf-id="hf-2krg"></i><i data-hf-id="hf-oz7w"></i><i data-hf-id="hf-okwv"></i><i data-hf-id="hf-o6lu"></i><i data-hf-id="hf-jqbp"></i><i data-hf-id="hf-qkg0"></i><i data-hf-id="hf-q64z"></i><i data-hf-id="hf-prty"></i><i data-hf-id="hf-pdix"></i><i data-hf-id="hf-hqsk"></i><i data-hf-id="hf-hchj"></i><i data-hf-id="hf-8d0n"></i><i data-hf-id="hf-8rbo"></i><i data-hf-id="hf-7kel"></i><i data-hf-id="hf-7ypm"></i></div>
+          <div data-hf-id="hf-hrv6" class="reply" id="s6-reply"></div>
+        </div>
+        <div data-hf-id="hf-tz2t" class="lower">
+          <div data-hf-id="hf-vu4q"><span data-hf-id="hf-z1qi" class="chip mono" id="s6-chip"><b data-hf-id="hf-3e75">04</b> Talk your way out</span></div>
+          <h2 data-hf-id="hf-pgbt" class="h-display" id="s6-h">A coach in your ear.</h2>
+        </div>
+        <div data-hf-id="hf-b12p" class="foot mono" id="s6-foot">Speech → AssemblyAI · facts from the room → Claude words the reply</div>
+      </section>
+
+      <!-- ===== S7 haptics ===== -->
+      <section data-hf-id="hf-yps8" id="s7" class="clip scene" data-start="53" data-duration="13" data-track-index="2">
+        <div data-hf-id="hf-defz" class="panel" id="s7-panel"></div>
+        <div data-hf-id="hf-ixu0" class="vlabel"><span data-hf-id="hf-lgro" class="chip mono" id="s7-vchip">Stand up → smoke. Crouch → clear air.</span></div>
+        <div data-hf-id="hf-z992" class="head">
+          <div data-hf-id="hf-1043"><span data-hf-id="hf-eddk" class="chip mono" id="s7-chip"><b data-hf-id="hf-3si6">05</b> Feel it</span></div>
+          <h2 data-hf-id="hf-tvm7" class="h-display" id="s7-h">DataFeel Dots on both wrists.</h2>
+        </div>
+        <div data-hf-id="hf-0grp" class="wrists" id="s7-wrists">
+          <div data-hf-id="hf-m1jy" class="band" style="left: 0;" id="s7-bl">
+            <div data-hf-id="hf-3vc8" class="side mono">Left wrist</div>
+            <div data-hf-id="hf-pvou" class="halo warm" style="left: 10px;" id="s7-hl1"></div><div data-hf-id="hf-8fpe" class="halo warm" style="left: 130px;" id="s7-hl2"></div>
+            <div data-hf-id="hf-5jj1" class="halo cool" style="left: 10px;" id="s7-cl1"></div><div data-hf-id="hf-7j8n" class="halo cool" style="left: 130px;" id="s7-cl2"></div>
+            <div data-hf-id="hf-1tcs" class="dotc" style="left: 60px;" id="s7-dl1"></div><div data-hf-id="hf-dafm" class="dotc" style="left: 180px;" id="s7-dl2"></div>
+            <div data-hf-id="hf-jku7" class="temp mono" id="s7-tl">33 °C</div>
+          </div>
+          <div data-hf-id="hf-xzg2" class="band" style="left: 460px;" id="s7-br">
+            <div data-hf-id="hf-97ar" class="side mono">Right wrist</div>
+            <div data-hf-id="hf-vies" class="halo warm" style="left: 10px;" id="s7-hr1"></div><div data-hf-id="hf-5jx8" class="halo warm" style="left: 130px;" id="s7-hr2"></div>
+            <div data-hf-id="hf-r0r7" class="halo cool" style="left: 10px;" id="s7-cr1"></div><div data-hf-id="hf-c6yx" class="halo cool" style="left: 130px;" id="s7-cr2"></div>
+            <div data-hf-id="hf-n8wa" class="dotc" style="left: 60px;" id="s7-dr1"></div><div data-hf-id="hf-hukk" class="dotc" style="left: 180px;" id="s7-dr2"></div>
+            <div data-hf-id="hf-hpnh" class="temp mono" id="s7-tr">33 °C</div>
+          </div>
+        </div>
+        <div data-hf-id="hf-pbwt" class="phase">
+          <div data-hf-id="hf-v75h" id="s7-p1"><h3 data-hf-id="hf-vq2p" style="color: var(--fire);">Warm on the fire's side</h3><p data-hf-id="hf-s1im">The wrist facing the fire heats up as you get closer (33 → 38 °C).</p></div>
+          <div data-hf-id="hf-z59i" id="s7-p2"><h3 data-hf-id="hf-clb2">Buzz in the smoke</h3><p data-hf-id="hf-zmf1">Stand up into smoke and both wrists pulse at 170 Hz.</p></div>
+          <div data-hf-id="hf-33dj" id="s7-p3"><h3 data-hf-id="hf-lhhr" style="color: var(--cool);">Cool at the exit</h3><p data-hf-id="hf-631y">Reach the open exit and every Dot drops to 20 °C.</p></div>
+        </div>
+      </section>
+
+      <!-- ===== S8 review ===== -->
+      <section data-hf-id="hf-dhg6" id="s8" class="clip scene" data-start="66" data-duration="10" data-track-index="2">
+        <div data-hf-id="hf-owjm" class="panel"></div>
+        <div data-hf-id="hf-gwvu" class="head">
+          <div data-hf-id="hf-1ef4"><span data-hf-id="hf-upoi" class="chip mono" id="s8-chip"><b data-hf-id="hf-46t7">06</b> Review</span></div>
+          <h2 data-hf-id="hf-63u4" class="h-display" id="s8-h">Every drill gets a score.</h2>
+        </div>
+        <div data-hf-id="hf-rhep" class="stats">
+          <div data-hf-id="hf-e41b" class="stat" id="s8-a"><div data-hf-id="hf-v57o" class="k mono">Escape time</div><div data-hf-id="hf-s1vh" class="v ok" id="s8-va">0:00</div></div>
+          <div data-hf-id="hf-5g5g" class="stat" id="s8-b"><div data-hf-id="hf-zyot" class="k mono">Oxygen left</div><div data-hf-id="hf-ld23" class="v ok" id="s8-vb">0%</div></div>
+          <div data-hf-id="hf-67t9" class="stat" id="s8-c"><div data-hf-id="hf-ap2t" class="k mono">Time in smoke</div><div data-hf-id="hf-vni8" class="v ok" id="s8-vc">0.0 s</div></div>
+          <div data-hf-id="hf-oziy" class="stat" id="s8-d"><div data-hf-id="hf-v4y6" class="k mono">Stayed low</div><div data-hf-id="hf-9og1" class="v ok" id="s8-vd">0%</div></div>
+        </div>
+      </section>
+
+      <!-- ===== S9 close ===== -->
+      <section data-hf-id="hf-avr2" id="s9" class="clip scene" data-start="76" data-duration="14" data-track-index="2">
+        <div data-hf-id="hf-hwk1" class="lines" id="s9-lines">
+          <div data-hf-id="hf-8g4v" class="l h-display" id="s9-l1">Any room. Any instructor.</div>
+          <div data-hf-id="hf-sst7" class="l h-display" id="s9-l2"><em data-hf-id="hf-anz4">Minutes,</em> not a training facility.</div>
+        </div>
+        <div data-hf-id="hf-dyil" class="end" id="s9-end">
+          <div data-hf-id="hf-kp4k" class="word h-display" id="s9-word"><span data-hf-id="hf-5ji6">FireDrill</span><span data-hf-id="hf-nnl2" class="ar" style="display:block;background:var(--fire);color:var(--bg);padding:0 26px;border-radius:12px;">AR</span></div>
+          <div data-hf-id="hf-2xt1" class="team" id="s9-team"><span data-hf-id="hf-60te">Prakhar</span><span data-hf-id="hf-mrjb">Varnika</span><span data-hf-id="hf-i4kn">Eileen</span><span data-hf-id="hf-pmlv">Devaj</span><span data-hf-id="hf-r7mp">Emma</span></div>
+          <div data-hf-id="hf-56ss" class="tech mono" id="s9-tech"><span data-hf-id="hf-rxzv">Vision Pro · WebXR</span><span data-hf-id="hf-lmd4">three.js</span><span data-hf-id="hf-fncj">Claude</span><span data-hf-id="hf-685f">AssemblyAI</span><span data-hf-id="hf-lgu1">DataFeel</span></div>
+          <div data-hf-id="hf-zr55" class="credit mono" id="s9-credit">Flame flipbooks: Unity Labs, CC0 · Room scan 10_17_2026</div>
+        </div>
+      </section>
+    </div>
+    <script>
+      const tl = gsap.timeline({ paused: true });
+      const IN = "power3.out", OUT = "power2.in";
+
+      // ambient: ember glow breathes for the whole film (finite repeats)
+      tl.fromTo("#ember", { scale: 0.9, opacity: 0.7 }, { scale: 1.1, opacity: 1, duration: 4.5, ease: "sine.inOut", yoyo: true, repeat: 19 }, 0);
+
+      // footage camera moves (on the untimed wrappers)
+      const push = (sel, start, dur, from = 1, to = 1.08) =>
+        tl.fromTo(sel, { scale: from }, { scale: to, duration: dur, ease: "none" }, start);
+      push("#w3", 13, 9, 1.02, 1.1);
+      push("#w4a", 22, 7, 1, 1.06);
+      push("#w4b", 29, 7, 1.04, 1.0);
+      push("#w5", 36, 7, 1, 1.05);
+      push("#w8", 66, 10, 1, 1.06);
+      // dip-to-dark seams between footage scenes
+      const seam = (sel, start, dur) => {
+        tl.fromTo(sel, { opacity: 0 }, { opacity: 1, duration: 0.5, ease: "power1.out" }, start);
+        tl.to(sel, { opacity: 0, duration: 0.45, ease: "power1.in" }, start + dur - 0.5);
+      };
+      seam("#w3", 13, 9); seam("#w5", 36, 7); seam("#w6", 43, 10); seam("#w7", 53, 9); seam("#w8", 66, 10);
+      tl.fromTo("#w4a", { opacity: 0 }, { opacity: 1, duration: 0.5 }, 22);
+      tl.fromTo("#w4b", { opacity: 0 }, { opacity: 1, duration: 0.35 }, 29);
+      tl.to("#w4b", { opacity: 0, duration: 0.45 }, 35.5);
+
+      // S1: kinetic-beat-slam — three lines, three different entrances, shared beat
+      tl.fromTo("#s1-kicker", { opacity: 0, x: -30 }, { opacity: 1, x: 0, duration: 0.5, ease: IN }, 0.2);
+      tl.fromTo("#s1-rule", { scaleX: 0 }, { scaleX: 1, duration: 0.7, ease: "expo.out" }, 0.3);
+      tl.fromTo("#s1-l1", { opacity: 0, scale: 1.25 }, { opacity: 1, scale: 1, duration: 0.5, ease: "back.out(1.6)" }, 0.6);
+      tl.fromTo("#s1-l2", { opacity: 0, x: 140 }, { opacity: 1, x: 0, duration: 0.45, ease: "expo.out" }, 2.6);
+      tl.fromTo("#s1-l3", { opacity: 0, y: 70, rotation: -2 }, { opacity: 1, y: 0, rotation: 0, duration: 0.6, ease: IN }, 4.7);
+      tl.to(["#s1-l1", "#s1-l2"], { opacity: 0.35, duration: 0.6 }, 5.0);
+      tl.fromTo("#w1", { opacity: 0 }, { opacity: 1, duration: 1.2 }, 0);
+      tl.to(["#s1 .lines", "#s1-kicker", "#s1-rule", "#w1"], { opacity: 0, duration: 0.5, ease: OUT }, 8.4);
+
+      // S2: title snap
+      tl.fromTo("#s2-fd", { opacity: 0, x: -80 }, { opacity: 1, x: 0, duration: 0.5, ease: "expo.out" }, 9.15);
+      tl.fromTo("#s2-ar", { opacity: 0, scale: 0.4, rotation: -8 }, { opacity: 1, scale: 1, rotation: 0, duration: 0.55, ease: "back.out(2)" }, 9.4);
+      tl.fromTo("#s2-tag", { opacity: 0, y: 30 }, { opacity: 1, y: 0, duration: 0.6, ease: IN }, 9.9);
+      tl.fromTo("#s2-ghost", { opacity: 0, x: 0 }, { opacity: 1, x: -160, duration: 4, ease: "none" }, 9);
+      tl.to("#s2 .center", { opacity: 0, scale: 0.97, duration: 0.4, ease: OUT }, 12.55);
+
+      // lower-third entrance used by footage scenes
+      const lower = (p, start) => {
+        tl.fromTo(`#${p}-chip`, { opacity: 0, x: -40 }, { opacity: 1, x: 0, duration: 0.45, ease: IN }, start);
+        tl.fromTo(`#${p}-h`, { opacity: 0, y: 40 }, { opacity: 1, y: 0, duration: 0.55, ease: "expo.out" }, start + 0.15);
+        tl.fromTo(`#${p}-p`, { opacity: 0, y: 24 }, { opacity: 1, y: 0, duration: 0.5, ease: "power2.out" }, start + 0.35);
+      };
+
+      // S3
+      lower("s3", 13.6);
+      tl.fromTo("#s3-read", { opacity: 0, x: 60 }, { opacity: 1, x: 0, duration: 0.6, ease: "back.out(1.4)" }, 14.4);
+      tl.fromTo("#s3-read div", { opacity: 0 }, { opacity: 1, duration: 0.3, stagger: 0.12 }, 14.7);
+      tl.to("#s3 .lower, #s3-read", { opacity: 0, duration: 0.4 }, 21.4);
+
+      // S4
+      tl.fromTo("#s4-voice", { opacity: 0, y: -40, scale: 0.96 }, { opacity: 1, y: 0, scale: 1, duration: 0.55, ease: "back.out(1.5)" }, 22.2);
+      tl.fromTo("#s4-rec", { opacity: 1 }, { opacity: 0.2, duration: 0.4, yoyo: true, repeat: 9, ease: "sine.inOut" }, 22.2);
+      lower("s4", 22.6);
+      tl.fromTo("#s4-cap1", { opacity: 0, y: 30 }, { opacity: 1, y: 0, duration: 0.5, ease: IN }, 22.9);
+      tl.to("#s4-voice", { opacity: 0, y: -30, duration: 0.45, ease: OUT }, 28.4);
+      tl.to("#s4-cap1", { opacity: 0, y: -24, duration: 0.35, ease: OUT }, 29.0);
+      tl.fromTo("#s4-cap2", { opacity: 0, y: 30 }, { opacity: 1, y: 0, duration: 0.5, ease: "expo.out" }, 29.3);
+      tl.to("#s4 .lower", { opacity: 0, duration: 0.4 }, 35.4);
+
+      // S5
+      lower("s5", 36.4);
+      tl.fromTo("#s5-legend", { opacity: 0, x: 60 }, { opacity: 1, x: 0, duration: 0.55, ease: IN }, 36.8);
+      tl.fromTo(["#s5-r1", "#s5-r2", "#s5-r3"], { opacity: 0, x: 30 }, { opacity: 1, x: 0, duration: 0.4, stagger: 0.18, ease: "power2.out" }, 37.1);
+      tl.to("#s5 .lower, #s5-legend", { opacity: 0, duration: 0.4 }, 42.4);
+
+      // S6: discrete word reveal of Claude's reply + a waveform while it speaks
+      const reply = "Head left toward the open exit about 4 metres away, and stay low because there is smoke.";
+      const hl = { "open": "hl", "exit": "hl", "stay": "hl2", "low": "hl2" };
+      const replyEl = document.getElementById("s6-reply");
+      reply.split(" ").forEach((w, i) => {
+        const s = document.createElement("span");
+        const key = w.replace(/[^a-z]/gi, "").toLowerCase();
+        if (hl[key]) s.className = hl[key];
+        s.textContent = w + " ";
+        replyEl.appendChild(s);
+      });
+      tl.fromTo("#s6-coach", { opacity: 0, x: 60 }, { opacity: 1, x: 0, duration: 0.55, ease: IN }, 43.4);
+      tl.fromTo("#s6-ask", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.4, ease: IN }, 43.9);
+      tl.fromTo("#s6-reply span", { opacity: 0, y: 8 }, { opacity: 1, y: 0, duration: 0.18, stagger: 0.2, ease: "power1.out" }, 45.2);
+      document.querySelectorAll("#s6-wave i").forEach((bar, i) => {
+        const d = 0.16 + ((i * 37) % 11) / 60;
+        tl.fromTo(bar, { scaleY: 0.15 }, { scaleY: 0.35 + ((i * 53) % 13) / 20, duration: d, yoyo: true, repeat: Math.floor(3.6 / d), ease: "sine.inOut" }, 45.2);
+      });
+      lower("s6", 43.6);
+      tl.fromTo("#s6-foot", { opacity: 0 }, { opacity: 1, duration: 0.5 }, 46);
+      tl.to("#s6 .lower, #s6-coach, #s6-foot", { opacity: 0, duration: 0.4 }, 52.4);
+
+      // S7: haptics diagram, three phases
+      tl.fromTo("#s7-panel", { x: 960 }, { x: 0, duration: 0.6, ease: "expo.out" }, 53);
+      tl.fromTo("#s7-chip", { opacity: 0, x: -30 }, { opacity: 1, x: 0, duration: 0.45, ease: IN }, 53.4);
+      tl.fromTo("#s7-h", { opacity: 0, y: 30 }, { opacity: 1, y: 0, duration: 0.5, ease: "expo.out" }, 53.55);
+      tl.fromTo("#s7-vchip", { opacity: 0, y: 20 }, { opacity: 1, y: 0, duration: 0.45, ease: IN }, 54);
+      tl.fromTo(["#s7-bl", "#s7-br"], { opacity: 0, y: 40 }, { opacity: 1, y: 0, duration: 0.5, stagger: 0.12, ease: "back.out(1.4)" }, 53.8);
+      // phase 1: right wrist (facing the fire) warms
+      tl.fromTo("#s7-p1", { opacity: 0, y: 20 }, { opacity: 1, y: 0, duration: 0.45, ease: IN }, 54.4);
+      tl.fromTo(["#s7-hr1", "#s7-hr2"], { opacity: 0, scale: 0.6 }, { opacity: 1, scale: 1, duration: 1.4, ease: "power2.out" }, 54.6);
+      tl.to(["#s7-dr1", "#s7-dr2"], { backgroundColor: "#ff6a2b", duration: 1.4 }, 54.6);
+      const temp = (sel, from, to, at, dur) => {
+        const o = { v: from };
+        tl.fromTo(o, { v: from }, { v: to, duration: dur, ease: "power1.inOut",
+          onUpdate: () => { document.querySelector(sel).textContent = Math.round(o.v) + " °C"; } }, at);
+      };
+      temp("#s7-tr", 33, 38, 54.6, 1.6);
+      tl.to("#s7-p1", { opacity: 0, duration: 0.3 }, 58.2);
+      // phase 2: buzz — both wrists shake, halos off
+      tl.fromTo("#s7-p2", { opacity: 0, y: 20 }, { opacity: 1, y: 0, duration: 0.45, ease: IN }, 58.5);
+      tl.to(["#s7-hr1", "#s7-hr2"], { opacity: 0, duration: 0.4 }, 58.5);
+      tl.to(["#s7-dr1", "#s7-dr2"], { backgroundColor: "#5a524c", duration: 0.4 }, 58.5);
+      temp("#s7-tr", 38, 34, 58.5, 0.6);
+      tl.fromTo(["#s7-bl", "#s7-br"], { x: -5 }, { x: 5, duration: 0.05, yoyo: true, repeat: 15, ease: "none" }, 58.8);
+      tl.fromTo(["#s7-bl", "#s7-br"], { x: -5 }, { x: 5, duration: 0.05, yoyo: true, repeat: 15, ease: "none", immediateRender: false }, 60.0);
+      tl.to(["#s7-bl", "#s7-br"], { x: 0, duration: 0.1 }, 61.0);
+      tl.to("#s7-p2", { opacity: 0, duration: 0.3 }, 62.0);
+      // phase 3: cool at the exit
+      tl.fromTo("#s7-p3", { opacity: 0, y: 20 }, { opacity: 1, y: 0, duration: 0.45, ease: IN }, 62.3);
+      tl.fromTo(["#s7-cl1", "#s7-cl2", "#s7-cr1", "#s7-cr2"], { opacity: 0, scale: 0.6 }, { opacity: 1, scale: 1, duration: 1.0, ease: "power2.out" }, 62.4);
+      tl.to(["#s7-dl1", "#s7-dl2", "#s7-dr1", "#s7-dr2"], { backgroundColor: "#5cc8ff", duration: 0.8 }, 62.4);
+      temp("#s7-tl", 33, 20, 62.4, 1.4);
+      temp("#s7-tr", 34, 20, 62.4, 1.4);
+      tl.to("#s7 .head, #s7-wrists, #s7 .phase, #s7 .vlabel", { opacity: 0, duration: 0.4 }, 65.5);
+
+      // S8: counting-dynamic-scale on the review numbers (values from the recorded HUD review)
+      const STATS = { time: 9, oxygen: 100, smoke: 0, low: 100 }; // the HUD review in 06-review.mp4
+      tl.fromTo("#s8-chip", { opacity: 0, x: -30 }, { opacity: 1, x: 0, duration: 0.45, ease: IN }, 66.3);
+      tl.fromTo("#s8-h", { opacity: 0, y: 30 }, { opacity: 1, y: 0, duration: 0.5, ease: "expo.out" }, 66.45);
+      tl.fromTo(["#s8-a", "#s8-b", "#s8-c", "#s8-d"], { opacity: 0, y: 40 }, { opacity: 1, y: 0, duration: 0.5, stagger: 0.12, ease: "back.out(1.3)" }, 66.9);
+      const count = (sel, to, fmt, at) => {
+        const o = { v: 0 };
+        tl.fromTo(o, { v: 0 }, { v: to, duration: 1.4, ease: "power2.out",
+          onUpdate: () => { document.querySelector(sel).textContent = fmt(o.v); } }, at);
+        tl.fromTo(sel, { scale: 0.8 }, { scale: 1, duration: 1.4, ease: "power2.out" }, at);
+      };
+      count("#s8-va", STATS.time, (v) => `0:${String(Math.round(v)).padStart(2, "0")}`, 67.2);
+      count("#s8-vb", STATS.oxygen, (v) => `${Math.round(v)}%`, 67.35);
+      count("#s8-vc", STATS.smoke, (v) => `${v.toFixed(1)} s`, 67.5);
+      count("#s8-vd", STATS.low, (v) => `${Math.round(v)}%`, 67.65);
+      tl.to("#s8 .head, #s8 .stats", { opacity: 0, duration: 0.4 }, 75.5);
+
+      // S9: close
+      tl.fromTo("#s9-l1", { opacity: 0, x: -120 }, { opacity: 1, x: 0, duration: 0.55, ease: "expo.out" }, 76.3);
+      tl.fromTo("#s9-l2", { opacity: 0, scale: 1.15 }, { opacity: 1, scale: 1, duration: 0.55, ease: "back.out(1.5)" }, 77.6);
+      tl.to("#s9-lines", { opacity: 0, y: -30, duration: 0.5, ease: OUT }, 81.6);
+      tl.fromTo("#s9-end", { opacity: 0 }, { opacity: 1, duration: 0.6 }, 82.2);
+      tl.fromTo("#s9-word", { scale: 0.9 }, { scale: 1, duration: 0.8, ease: "expo.out" }, 82.2);
+      tl.fromTo("#s9-team span", { opacity: 0, y: 24 }, { opacity: 1, y: 0, duration: 0.4, stagger: 0.1, ease: IN }, 83.0);
+      tl.fromTo("#s9-tech span", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.35, stagger: 0.08, ease: "power2.out" }, 84.0);
+      tl.fromTo("#s9-credit", { opacity: 0 }, { opacity: 1, duration: 0.6 }, 85.0);
+      tl.to("#s9-end", { opacity: 0, duration: 0.8, ease: OUT }, 89.0);
+
+      window.__timelines["main"] = tl;
+    </script>
+  </body>
+</html>
