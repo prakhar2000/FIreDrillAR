@@ -244,17 +244,21 @@ export function say(text) {
   return result;
 }
 
-// Hands-free coach. No command events: trainee questions must not author fires.
+// Hands-free coach. Optional onCommand(command, transcript) sees each parsed command first
+// (e.g. "fire" → the headset ignites); it returns true when handled, so the coach stays quiet.
+// The headset decides when commands count (only before the fire), so questions still reach the coach.
 // Returns a cleanup function; Eileen should call it when the XR session ends.
-export function startAgent(getContext) {
+export function startAgent(getContext, onCommand = () => false) {
   if (typeof getContext !== 'function') throw new TypeError('startAgent needs getContext');
-  if (agent) { agent.getContext = getContext; return stopAgent; }
-  agent = { getContext, abort: new AbortController(), queue: Promise.resolve() };
+  if (agent) { Object.assign(agent, { getContext, onCommand }); return stopAgent; }
+  agent = { getContext, onCommand, abort: new AbortController(), queue: Promise.resolve() };
   const owner = agent;
   turnHandler = (transcript) => {
     owner.queue = owner.queue.then(async () => {
       if (agent !== owner) return;
       try {
+        const command = parseCommand(transcript);
+        if (command && owner.onCommand(command, transcript)) { report(`Heard: ${transcript} → ${command.type}`); return; }
         const context = owner.getContext();
         const controller = new AbortController();
         const abort = () => controller.abort();

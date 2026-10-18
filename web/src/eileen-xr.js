@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { connectPoseChannel } from './eileen-pose-channel.js';
 import { loadHeadsetRoom, roomToXRMatrix } from './eileen-xr-room.js';
+import { createAlignment } from './eileen-pose-alignment.js';
 import { createHeadsetAnnotations } from './eileen-xr-annotations.js';
 import { createXRFire } from './effects.js';
 import { createXRHud } from './hud.js';
@@ -17,20 +18,29 @@ const tracking = document.querySelector('#tracking');
 roomInput.value = new URLSearchParams(location.search).get('room') || 'firedrill';
 let renderer, scene, camera, session = null, channel = null, reference = null;
 let sessionId, seq = 0, lastSend = -Infinity, hasPose = false, sent = 0, label;
-let roomRoot, roomPreview, roomReady = false;
+let roomRoot, roomPreview, roomReady = false, roomScan = null, aligned = false;
 let pendingAlignment = null;
 let updateAnnotations;
 const roomStatus = document.querySelector('#model-status');
 
-// Drill: the observer's `fire` marker ignites; each frame feeds fire → drill → HUD, heat and the voice agent.
-let fire, hud, items = [], firedAt = '', drillOn = false, lastTime = 0;
+// Drill: a `fire` item ignites, from the wearer (pinch or voice) or an optional observer.
+// Each frame feeds fire → drill → HUD, heat and the voice agent.
+let fire, hud, items = [], observerItems = [], ownItems = [], firedAt = '', drillOn = false, lastTime = 0;
 const head = new THREE.Vector3(), headQuat = new THREE.Quaternion();
 const worldPoints = (type) => items.filter((item) => item.type === type)
   .map((item) => roomRoot.localToWorld(new THREE.Vector3().fromArray(item.position)));
 
 function onSnapshot(snapshot) {
   if (snapshot?.roomId !== '10_17_2026') return;
-  items = snapshot.items;
+  observerItems = snapshot.items;
+  // An observer fire replaces the wearer's; clearing it on the observer then resets the drill.
+  if (observerItems.some((item) => item.type === 'fire')) ownItems = ownItems.filter((item) => item.type !== 'fire');
+  refresh();
+}
+
+function refresh() {
+  items = [...observerItems, ...ownItems];
+  updateAnnotations({ roomId: '10_17_2026', items });
   const marker = items.find((item) => item.type === 'fire');
   const key = marker ? marker.position.join() : '';
   if (key === firedAt) return;
@@ -52,9 +62,70 @@ function stepDrill(dt, smokeDepth) {
   hud.review(drill.stats());
 }
 
-// Test without the observer: firedrill.ignite([x, y, z]) in the console (scan coordinates).
-window.firedrill = { ignite: (position) => onSnapshot({ roomId: '10_17_2026',
-  items: [...items.filter((item) => item.type !== 'fire'), { type: 'fire', position }] }) };
+// The wearer starts the fire (scan coordinates). Ignored while a drill runs; after the review it restarts there.
+function igniteAt(scanPos) {
+  if (drillOn || items.some((item) => item.type === 'fire' && item.source !== 'wearer')) return false;
+  ownItems = [...ownItems.filter((item) => item.type !== 'fire'), { type: 'fire', position: scanPos, source: 'wearer' }];
+  refresh();
+  return true;
+}
+window.firedrill = { ignite: igniteAt };
+
+// World ray → first hit on the scan, in scan coordinates (null on a miss).
+const raycaster = new THREE.Raycaster();
+function scanHit(origin, direction) {
+  if (!roomScan) return null;
+  roomRoot.updateMatrixWorld(true);
+  raycaster.set(origin, direction);
+  const hit = raycaster.intersectObject(roomScan.model, true)[0];
+  return hit ? roomRoot.worldToLocal(hit.point).toArray() : null;
+}
+
+// Gaze + pinch on visionOS (transient-pointer), or a controller trigger in the emulator.
+function onSelect(event) {
+  const pose = reference && event.frame.getPose(event.inputSource.targetRaySpace, reference);
+  if (!pose) return;
+  const { position: p, orientation: q } = pose.transform;
+  const at = scanHit(new THREE.Vector3(p.x, p.y, p.z),
+    new THREE.Vector3(0, 0, -1).applyQuaternion(new THREE.Quaternion(q.x, q.y, q.z, q.w)));
+  if (at) igniteAt(at);
+}
+
+// Where the wearer looks: the scan under the head's forward ray, else ~2 m ahead on the floor.
+function gazePoint() {
+  const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(headQuat);
+  const hit = scanHit(head, forward);
+  if (hit) return hit;
+  forward.y = 0;
+  const ahead = head.clone().addScaledVector(forward.normalize(), 2); ahead.y = 0;
+  return roomRoot.worldToLocal(ahead).toArray();
+}
+
+// Voice: "fire" / "start a fire" ignites where the wearer looks; "exit" before the fire marks an exit there.
+// Anything else (and any question once the drill runs) goes to the coach.
+function onVoiceCommand(command, transcript) {
+  if (!roomScan || drillOn) return false;
+  if (command.type === 'exit') {
+    ownItems = [...ownItems, { type: 'exit', position: gazePoint(), source: 'wearer' }];
+    refresh();
+    return true;
+  }
+  const fireWords = command.type === 'fire' || (command.type === 'start' && /\bfire\b/i.test(transcript));
+  return fireWords && igniteAt(gazePoint());
+}
+
+// No observer alignment: put the wearer at the scan's start, life size, facing scan -Z.
+function selfAlign(pose) {
+  const p = pose.transform.position, q = pose.transform.orientation;
+  try {
+    const a = createAlignment({ position: [p.x, p.y, p.z], quaternion: [q.x, q.y, q.z, q.w], sessionId },
+      roomScan.spawn, roomScan.floorY);
+    roomRoot.matrix.copy(roomToXRMatrix({ origin: a.origin.toArray(), target: a.target.toArray(),
+      rotation: a.rotation.toArray(), scale: 1 }));
+    aligned = true;
+    roomStatus.textContent = 'Room placed around you. Pinch on the room or say "fire" to start the drill.';
+  } catch { /* looking straight up or down: retry next frame */ }
+}
 
 const agentContext = () => ({
   head: head.toArray(),
@@ -65,7 +136,7 @@ const agentContext = () => ({
 });
 
 function resetTracking() {
-  pendingAlignment = null;
+  pendingAlignment = null; aligned = false;
   sessionId = crypto.randomUUID(); seq = 0; lastSend = -Infinity; hasPose = false;
   channel?.tracking('reset');
   if (roomRoot && roomPreview) {
@@ -78,6 +149,7 @@ function applyRoomAlignment(data) {
   if (data.sessionId !== sessionId) return;
   pendingAlignment = data;
   if (!roomReady) return;
+  aligned = true;
   roomRoot.matrix.copy(roomToXRMatrix(data));
   roomStatus.textContent = 'Room aligned with computer. Head movement is live.';
 }
@@ -94,10 +166,10 @@ function makeView() {
   roomRoot = new THREE.Group(); scene.add(roomRoot);
   updateAnnotations = createHeadsetAnnotations(roomRoot);
   roomStatus.textContent = 'Loading scanned room and textures...';
-  loadHeadsetRoom(roomRoot).then(({ preview, missingTexture }) => {
-    roomPreview = preview; roomReady = true;
-    roomStatus.textContent = missingTexture ? 'Room loaded with missing textures. Align on the computer.'
-      : 'Room preview ready. Align on the computer to enter the room.';
+  loadHeadsetRoom(roomRoot).then(({ preview, missingTexture, model, floorY, spawn }) => {
+    roomPreview = preview; roomReady = true; roomScan = { model, floorY, spawn };
+    roomStatus.textContent = missingTexture ? 'Room loaded with missing textures. Start VR to step inside.'
+      : 'Room preview ready. Start VR to step inside.';
     if (pendingAlignment) applyRoomAlignment(pendingAlignment);
   }).catch((error) => { roomStatus.textContent = `Room loading failed: ${error.message}. Reload to retry.`; });
   scene.add(new THREE.GridHelper(8, 16, 0x75aebd, 0x345261));
@@ -118,6 +190,7 @@ function makeView() {
       const pose = session.visibilityState === 'visible' ? frame.getViewerPose(reference) : null;
       if (pose && !pose.emulatedPosition) {
         if (!hasPose) { resetTracking(); hasPose = true; }
+        if (!aligned && roomReady) selfAlign(pose);
         head.copy(pose.transform.position); headQuat.copy(pose.transform.orientation);
         if (drillOn) stepDrill(dt, smokeDepth);
         if (time - lastSend >= 50) {
@@ -170,9 +243,10 @@ startButton.addEventListener('click', async () => {
     // Request directly in the click handler to preserve Safari user activation.
     session = await navigator.xr.requestSession('immersive-vr', { requiredFeatures: ['local-floor'] });
     session.addEventListener('end', endSession, { once: true });
+    session.addEventListener('select', onSelect);
     makeView();
     channel = connectPoseChannel({ role: 'publisher', room: roomInput.value,
-      onAnnotations: (snapshot) => { updateAnnotations(snapshot); onSnapshot(snapshot); },
+      onAnnotations: onSnapshot,
       onAlignment: applyRoomAlignment,
       onStatus: (message) => { connection.textContent = message; } });
     camera.position.set(0, 0, 0);
@@ -181,7 +255,7 @@ startButton.addEventListener('click', async () => {
     reference.addEventListener('reset', resetTracking);
     resetTracking(); sent = 0;
     connectHeat();
-    startAgent(agentContext);
+    startAgent(agentContext, onVoiceCommand);
     stopButton.disabled = false;
     support.textContent = 'VR active. Exit using the Digital Crown or Stop VR.';
   } catch (error) {

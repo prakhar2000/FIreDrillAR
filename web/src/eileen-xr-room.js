@@ -18,8 +18,11 @@ export async function loadHeadsetRoom(parent) {
   materials.preload();
   const model = await new OBJLoader().setMaterials(materials).loadAsync(objUrl);
   await ready;
+  const heights = [];
   model.traverse((mesh) => {
     if (!mesh.isMesh) return;
+    const values = mesh.geometry.attributes.position;
+    for (let i = 0; i < values.count; i++) heights.push(values.getY(i));
     // Scan textures contain baked lighting; unlit materials avoid a black interior.
     const replace = (material) => {
       const next = new THREE.MeshBasicMaterial({ map: material.map,
@@ -39,7 +42,10 @@ export async function loadHeadsetRoom(parent) {
   parent.add(model);
   parent.matrixAutoUpdate = false;
   parent.matrix.copy(preview);
-  return { preview, missingTexture };
+  heights.sort((a, b) => a - b);
+  // Same floor estimate and start (scan centre) as the observer's desktop.js, in scan coordinates.
+  const floorY = heights[Math.floor(heights.length * 0.1)];
+  return { preview, missingTexture, model, floorY, spawn: new THREE.Vector3(center.x, floorY, center.z) };
 }
 
 export function roomToXRMatrix(alignment) {

@@ -352,9 +352,10 @@ Everyone codes against these, so pieces plug together at merge time.
 - `createXRFire(roomRoot, camera)` (effects.js) → `{ ignite(scanPos), update(dt, running) → smokeDepth 0–1, worldFires() → Vector3[], reset() }`
 - `drill` (drill.js) `.start()`, `.update(dt, { smokeDepth, head, exits }) → { time, oxygen 0–1, smokeDepth, escaped, timedOut }`, `.stop(reason)`, `.stats() → { time, oxygen, smokeTime, pctLow, checkedBlocked }`
 - `createXRHud(camera)` (hud.js) → `{ update(state), review(stats) }`
-- `startAgent(getContext)` (voice.js): `getContext() → { head, facing, fires, exits, blocked }` as `[x,y,z]` arrays
+- `startAgent(getContext, onCommand?)` (voice.js): `getContext() → { head, facing, fires, exits, blocked }` as `[x,y,z]` arrays. `onCommand(command, transcript)` gets each `parseCommand()` result first and returns `true` when it handled it (then `/py/agent` is skipped). The headset handles commands only before the fire: "fire" / "start a fire" ignites where the wearer looks, "exit" marks an exit there; everything else, and every question once the drill runs, goes to the coach.
 - `POST /py/agent` (server): `{ transcript, head, facing, fires, exits, blocked, smoke? } → { reply }`. `smoke` (0–1, optional) is the smoke depth; without it, any fire counts as "in smoke" and the reply says to stay low. Facts (nearest exit not within 1.5 m of a blocked marker, its distance and direction, nearest fire) are computed in Python (`server/agent.py`); Claude (`claude-haiku-5-5`) only words them. With no `ANTHROPIC_API_KEY` or on error/timeout (6 s), a rule-based reply is returned, so it never goes silent.
-- Ignition: an annotation item `{ type: 'fire', position }` (scan coordinates) from the observer. Test without it: `firedrill.ignite([x, y, z])` in the headset page console.
+- Ignition (scan coordinates): the wearer pinches on the scan (gaze + pinch on visionOS, a controller trigger in the emulator) or says "fire"; both call `igniteAt(scanPos)` in `eileen-xr.js`, also `firedrill.ignite([x, y, z])` in the console. Ignored while a drill runs; after the review a new pinch restarts the drill there. An observer `{ type: 'fire', position }` annotation item still works and replaces the wearer's fire.
+- Room placement: with no observer alignment the headset places the scan life size around the wearer (start = scan centre, facing scan −Z, floor = the observer's 10th-percentile estimate). An observer **Align** still overrides it.
 
 ---
 
@@ -363,7 +364,7 @@ Everyone codes against these, so pieces plug together at merge time.
 ### Today's demo: Vision Pro (WebXR), decided 4:50 PM
 The demo runs on Eileen's Vision Pro page (`web/eileen-xr.html`, `immersive-vr` in Safari: the textured scan, not passthrough). The desktop observer (`desktop.js`) aligns the headset and places markers. A Unity Vision Pro port comes **after** the hackathon: it needs a Mac, a paid Unity license tier, and the fire shaders rewritten in Shader Graph, and visionOS gives no camera frames without Apple's Enterprise entitlement. The 5:30 feature freeze still applies unless the team agrees to move it.
 
-Flow: the observer places a fire in a corner of the scan → the headset sees fire and smoke → the EXIT signs light up and route arrows appear at once → the user walks out while the agent coaches by voice, the wrists warm near the fire, and the oxygen bar drains in smoke → review screen with time and oxygen.
+Flow (no observer needed since 6:30 PM): Start VR places the scan around the wearer → optionally say "exit" while looking at each exit → pinch on the scan or say "fire" → the headset sees fire and smoke → the EXIT signs light up and route arrows appear at once → the user walks out while the agent coaches by voice, the wrists warm near the fire, and the oxygen bar drains in smoke → review screen with time and oxygen.
 
 Paste-ready instructions for each person's agent: [`TASKS-visionpro.md`](TASKS-visionpro.md). The wiring and stubs are already in `eileen-xr.js`, so everyone can start at once.
 
@@ -442,6 +443,9 @@ Paste-ready instructions for each person's agent: [`TASKS-visionpro.md`](TASKS-v
 - ✅ **Buzz pulses** instead of a constant drone: 0.25 s on / 0.5 s off while `buzz` is true (`BUZZ_EVERY` in `dots.py`).
 - ✅ **Place fire** tool in the observer (desktop.js, Eileen's file): click the scan, the headset ignites there; clicking again moves it. Verified end to end (observer + headset page in headless Chrome with the IWER emulator): fire, smoke and HUD timer start on the headset.
 - ✅ Eileen's route guide and exit signs (her row in the Vision Pro table).
+- ✅ **Wearer-started fire** (`eileen-xr.js`, `eileen-xr-room.js`: Eileen's; `voice.js`: Emma's): gaze + pinch or "fire" ignites, "exit" marks an exit, the room places itself without the observer. Tested in headless Chrome with IWER (controller trigger, and voice.js fed fake AssemblyAI turns); 🚧 not yet on the Vision Pro.
+- ✅ **Tunnel for visionOS Safari** (it rejects the self-signed cert): `TUNNEL=1` in `vite.eileen.config.js` allows `*.trycloudflare.com` and moves the pose relay socket to port 443. Install cloudflared (Mac: `brew install cloudflared`, Windows: `winget install Cloudflare.cloudflared`), then run the Eileen server with `TUNNEL=1` (Mac: `TUNNEL=1 PY_SERVER=http://<devaj-ip>:8000 npm run dev -- --config vite.eileen.config.js`; PowerShell: `$env:TUNNEL=1; $env:PY_SERVER="http://<devaj-ip>:8000"; npm run dev -- --config vite.eileen.config.js`) and, in a second terminal, `cloudflared tunnel --url https://localhost:5173 --no-tls-verify`. Open the printed `https://….trycloudflare.com/eileen-xr.html` on the Vision Pro. The URL changes every run.
+- ✅ **Observer NaN fixed**: `web/public/scans/room` was a git symlink, a text file on Windows, so `main.js` loaded an empty scan and its camera went NaN (`linearRampToValueAtTime … non-finite` every frame). `room.js` (Prakhar's) now bundles `10_17_2026/` like the headset; the symlink is gone.
 - 🚧 Heat stream from the Vision Pro through Prakhar's Vite proxy, and the worn wrist run (heat / buzz / cool, `SWAP_SIDES` if needed).
 
 5. ⏸ **Phone-AR fire (`unity/`)**, paused for today's Vision Pro demo; port to visionOS after the hackathon. Devaj has it working and is the only one who builds and runs the Unity app; send Unity requests to him. Open it with Unity Hub → Add → `unity/` (Unity 6000.5.10f1). Then run **Fire > Build AR Scene**, which writes `Assets/Fire/Scenes/FireAR.unity`. Tapping a detected plane ignites a fire, which spreads over the planes with smoke and firelight. `Library/` is regenerated and gitignored.
@@ -507,6 +511,8 @@ The two things that matter most during the Quest slot are **`room.json` saved an
 |---|---|
 | No "Start AR" / "AR not supported" | The page isn't HTTPS. Use `https://<ip>:5173` and accept the certificate warning |
 | Quest can't reach the laptop | Same hotspot? Using the IP, not localhost? Firewall allowed (Windows: Allow on Private)? Else use the cloudflared tunnel |
+| Vision Pro Safari refuses the page (certificate) | Use the tunnel: start the Eileen server with `TUNNEL=1` (Mac: `TUNNEL=1 npm run dev -- --config vite.eileen.config.js`; PowerShell: `$env:TUNNEL=1; npm run dev -- --config vite.eileen.config.js`), then `cloudflared tunnel --url https://localhost:5173 --no-tls-verify`. Without `TUNNEL`, Vite blocks the tunnel host and the pose relay socket. Install: `brew install cloudflared` / `winget install Cloudflare.cloudflared` |
+| Observer console: `linearRampToValueAtTime … non-finite` | Old checkout with the `public/scans/room` symlink (Windows can't follow it). Pull `devaj`/`main` |
 | No room surfaces in AR | Space Setup not done at this spot, or the spatial-data prompt was denied. Restart the AR session |
 | Calls to the server fail from the Quest | Always go through `/py/...` on the Vite address, never `http://…:8000` directly (the Quest blocks HTTP from an HTTPS page) |
 | No sound | Browsers need one tap/click before playing audio |

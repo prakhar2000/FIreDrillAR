@@ -66,6 +66,11 @@ scene from pose data, not a pixel-exact headset cast or passthrough feed.
    seconds. A different session ID requires alignment again.
    **Reset simulation** disconnects the observer and restores keyboard control.
 
+Without an observer, the headset places the room itself on the first head pose in VR:
+life size, the wearer at the scan centre facing scan -Z, floor at the observer's floor
+estimate. The wearer then pinches on the scan or says "fire" to start the drill, and can
+say "exit" before that to mark an exit where they look. An observer Align overrides it.
+
 The headset loads the same textured OBJ as the computer, showing a miniature preview
 before alignment. Wait for the room-ready message, enter VR, select the scanned room
 on the computer and click Align. The observer sends its calibration to the paired
