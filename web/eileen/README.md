@@ -92,7 +92,7 @@ export before refreshing the computer page, since a refresh discards local annot
 - `../src/eileen-pose-channel.js`: join/heartbeat/disconnect lifecycle.
 - `../src/eileen-pose-alignment.js`: yaw + translation + scale transform.
 - `../src/eileen-xr-room.js`: textured scan loading and inverse room transform.
-- `../src/eileen-xr-annotations.js`: live labels, markers and route arrows.
+- `../src/eileen-xr-annotations.js`: live labels, markers and route arrows (alarm look after ignition).
 - `../src/desktop.js`: observer and receiver. Its existing `updateHeadPose()` still
   takes room-space poses; this connection transforms incoming XR poses first.
 
@@ -131,6 +131,13 @@ uses the selected start. Mark known exits first and click Auto route to generate
 geometry-based route; click again after moving to replan. This is a snapshot route,
 not continuous navigation. Existing scan annotation sync sends the draft to the
 headset. The model cannot determine whether an exit is actually safe or available.
+
+Fire drill: **Place fire** adds one `fire` item (clicking again moves it); the headset
+ignites there. Placing it runs Auto route at once, and while a fire exists the observer
+replans from the live headset every 3 s. Exits within 1.5 m of a BLOCKED mark are skipped
+(the voice agent's rule) and the fire origin is a 0.6 m obstacle; fire spread is not modelled.
+After ignition the headset shows large glowing EXIT signs at ~2.1 m, BLOCKED in red with an X,
+and pulsing floor chevrons along the route instead of the thin line.
 
 The headset sign reports tracking interruptions and whether poses have been sent.
 An observer and publisher can both be connected while no viewer pose is available;

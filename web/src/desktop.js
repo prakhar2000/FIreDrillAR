@@ -299,11 +299,21 @@ function calculateRoute(state) {
   const scanned = Boolean(state.scan?.model.visible);
   const room = scanned ? 'scan' : 'sample';
   const items = state.layouts[room];
+  const of = (type) => items.filter((item) => item.type === type).map((item) => item.position);
+  const near = (a, b, r) => Math.hypot(a[0] - b[0], a[2] - b[2]) < r;
+  const blocked = of('blocked');
+  // Same rule as the voice agent (server/agent.py): an exit within 1.5 m of a blocked mark is closed.
+  const exits = of('exit').filter((exit) => !blocked.some((b) => near(exit, b, 1.5)));
+  if (of('exit').length && !exits.length) {
+    state.panel.querySelector('[data-edit]').textContent = 'Every marked exit is within 1.5 m of a blocked mark. Mark another exit.';
+    return;
+  }
+  // ponytail: the fire origin is a 0.6 m obstacle (unless the user stands in it); spread is not modelled.
+  const fires = of('fire').filter((fire) => !near(fire, routeStart.toArray(), 1));
   const result = planRoomRoute({
     surface: scanned ? state.scan.model : state.sample,
     bounds: state.bounds, floorY: state.floorY, start: routeStart.toArray(),
-    exits: items.filter((item) => item.type === 'exit').map((item) => item.position),
-    blocked: items.filter((item) => item.type === 'blocked').map((item) => item.position),
+    exits, blocked: blocked.concat(fires),
   });
   if (result.error) { state.panel.querySelector('[data-edit]').textContent = result.error; return; }
   state.layouts[room] = items.filter((item) => item.type !== 'waypoint').concat(
@@ -742,6 +752,8 @@ export function start(options = {}) {
       }
       items.push({ type: state.annotationTool, position: hit.point.toArray() });
       redrawAnnotations(state);
+      // Ignition: guide the headset to the nearest open exit at once (update() replans every 3 s).
+      if (state.annotationTool === 'fire') { state.replannedAt = performance.now(); autoRoute(state); }
       return;
     }
     state.scan.floorY = hit.point.y;
@@ -920,6 +932,18 @@ export function update(dt = 0) {
   if (text !== s.lastText) {
     s.panel.querySelector('[data-status]').textContent = text;
     s.lastText = text;
+  }
+  // While a fire burns, replan from the live headset position every 3 s.
+  if (s.mode === 'live' && !waiting && !stale && !s.annotationTool && !s.pickingSpawn
+    && performance.now() - (s.replannedAt || 0) > 3000
+    && s.layouts[s.scan?.model.visible ? 'scan' : 'sample'].some((item) => item.type === 'fire')) {
+    s.replannedAt = performance.now();
+    try {
+      calculateRoute(s);
+      const status = s.panel.querySelector('[data-route-status]');
+      status.hidden = false;
+      status.textContent = s.panel.querySelector('[data-edit]').textContent;
+    } catch (error) { console.error('Route replanning failed', error); }
   }
   s.panel.querySelector('[data-pose]').textContent = waiting ? 'No pose received'
     : `X ${s.position.x.toFixed(2)} | Z ${s.position.z.toFixed(2)} | Height above floor ${(s.position.y - s.floorY).toFixed(2)} | ${s.scan?.model.visible ? 'Model units (scale unverified)' : 'Meters'}`;
