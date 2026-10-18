@@ -22,7 +22,7 @@ def plan(left, right, cool, n):
     """Per-Dot (target skin temp or None = thermal off, LED rgb). First half of the Dots = left wrist."""
     if SWAP_SIDES:
         left, right = right, left
-    heats = [max(left, right)] if n == 1 else [left if i < n // 2 else right for i in range(n)]
+    heats = [max(left, right)] if n == 1 else [left if i < (n + 1) // 2 else right for i in range(n)]   # 3 Dots: 1-2 left
     out = []
     for h in heats:
         h = min(max(h, 0.0), 1.0)
@@ -146,7 +146,7 @@ if __name__ == "__main__":
     found = discover_devices(4)
     print(f"found {len(found)} Dot(s)")
     for i, d in enumerate(found):
-        side = "both" if len(found) == 1 else ("LEFT" if i < len(found) // 2 else "RIGHT") + " wrist"
+        side = "both" if len(found) == 1 else ("LEFT" if i < (len(found) + 1) // 2 else "RIGHT") + " wrist"
         print(f"Dot {i + 1} -> {side}, skin {d.registers.get_skin_temperature():.1f}C")
         d.set_led(255, 0, 0)
         d.play_frequency(BUZZ_HZ, 1.0)
