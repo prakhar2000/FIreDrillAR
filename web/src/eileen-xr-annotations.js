@@ -1,11 +1,12 @@
 import * as THREE from 'three';
+import { addRouteChevrons } from './eileen-route-visuals.js';
 
 export function createHeadsetAnnotations(parent) {
   const group = new THREE.Group(); group.name = 'live-room-annotations'; parent.add(group);
   let previous = '';
-  return (snapshot) => {
+  return (snapshot, floorY = null) => {
     if (snapshot?.roomId !== '10_17_2026') return;
-    const serialized = JSON.stringify(snapshot.items);
+    const serialized = JSON.stringify([snapshot.items, floorY]);
     if (serialized === previous) return;
     previous = serialized;
     group.traverse((object) => {
@@ -14,7 +15,9 @@ export function createHeadsetAnnotations(parent) {
     });
     group.clear();
     const route = [];
+    const active = snapshot.items.some((item) => item.type === 'fire');
     for (const item of snapshot.items) {
+      if (item.type === 'fire') continue;
       const point = new THREE.Vector3().fromArray(item.position);
       const waypoint = item.type === 'waypoint';
       const color = item.type === 'blocked' ? 0xff6262 : 0x55f0ad;
@@ -27,12 +30,14 @@ export function createHeadsetAnnotations(parent) {
       ctx.fillStyle = '#142333'; ctx.fillRect(0, 0, 512, 128);
       ctx.fillStyle = item.type === 'blocked' ? '#ff9090' : '#74f3c6';
       ctx.font = 'bold 64px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText(item.type === 'blocked' ? 'BLOCKED' : 'EXIT', 256, 64);
+      ctx.fillText(item.type === 'blocked' ? 'X BLOCKED' : 'EXIT', 256, 64);
       const map = new THREE.CanvasTexture(canvas); map.colorSpace = THREE.SRGBColorSpace;
       const sign = new THREE.Sprite(new THREE.SpriteMaterial({ map }));
-      sign.position.copy(point); sign.position.y += 0.8; sign.scale.set(1.2, 0.3, 1); group.add(sign);
+      sign.position.copy(point); sign.position.y = (floorY ?? point.y) + (active ? 1.3 : 0.8);
+      sign.scale.set(active ? 1.8 : 1.2, active ? 0.45 : 0.3, 1); group.add(sign);
     }
     if (route.length > 1) {
+      addRouteChevrons(group, route);
       group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(route),
         new THREE.LineBasicMaterial({ color: 0x55f0ad })));
       for (let i = 1; i < route.length; i++) {
@@ -41,5 +46,8 @@ export function createHeadsetAnnotations(parent) {
         group.add(new THREE.ArrowHelper(direction.normalize(), route[i - 1], Math.min(length, 0.5), 0x55f0ad, 0.15, 0.12));
       }
     }
+    group.traverse((object) => {
+      if (object.material) { object.material.transparent = true; object.material.opacity = active ? 1 : 0.4; }
+    });
   };
 }

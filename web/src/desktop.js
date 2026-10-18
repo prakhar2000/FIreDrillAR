@@ -5,6 +5,12 @@ import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
 import { connectPoseChannel } from './eileen-pose-channel.js';
 import { createAlignment, alignPose } from './eileen-pose-alignment.js';
 import { createRoomEffects } from './eileen-effects.js';
+import { planRoomRoute } from './eileen-route-planner.js';
+export { planRoomRoute } from './eileen-route-planner.js';
+import { chooseFirePositions } from './eileen-auto-fire.js';
+import { exitDefaults, readDefaultExits, saveDefaultExits } from './eileen-exit-defaults.js';
+import { fireKey, placeDrillFire, undoAnnotation, hasGuidancePose } from './eileen-fire-lifecycle.js';
+import { addRouteChevrons } from './eileen-route-visuals.js';
 import scanObjUrl from '../../10_17_2026/10_17_2026.obj?url';
 import scanMtlUrl from '../../10_17_2026/10_17_2026.mtl?url';
 import scanTextureOne from '../../10_17_2026/textures/dd3d245ca8809c56baa2936ab44c0a87.jpg?url';
@@ -107,12 +113,24 @@ function releaseObjects(root) {
 }
 
 function redrawAnnotations(state) {
+  const room = state.scan?.model.visible ? 'scan' : 'sample';
+  const nextFire = fireKey(state.layouts[room]);
+  if (nextFire !== state.drillFireKey) {
+    state.drillFireKey = nextFire;
+    state.routeRevision++;
+    state.nextGuidanceAt = 0;
+    state.layouts[room] = state.layouts[room].filter((item) => item.source !== 'geometry-draft');
+    state.effectsRunning = !!nextFire;
+    if (nextFire) state.effectsStartedAt = performance.now();
+    refreshEffects(state);
+  }
   const group = state.annotations;
   releaseObjects(group);
   group.clear();
   const items = state.layouts[state.scan?.model.visible ? 'scan' : 'sample'];
   const waypoints = [];
   for (const item of items) {
+    if (item.type === 'fire') continue;
     const position = new THREE.Vector3().fromArray(item.position);
     const route = item.type === 'waypoint';
     const blocked = item.type === 'blocked';
@@ -124,11 +142,12 @@ function redrawAnnotations(state) {
     if (route) {
       waypoints.push(position.clone().addScaledVector(UP, 0.09));
     } else {
-      label(group, blocked ? 'BLOCKED' : 'EXIT',
-        [position.x, position.y + 0.65, position.z], blocked ? '#ff9090' : '#74f3c6');
+      label(group, blocked ? 'X  BLOCKED' : 'EXIT',
+        [position.x, state.floorY + (nextFire ? 1.3 : 0.65), position.z], blocked ? '#ff9090' : '#74f3c6');
     }
   }
   if (waypoints.length > 1) {
+    addRouteChevrons(group, waypoints);
     group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(waypoints),
       new THREE.LineBasicMaterial({ color: 0x55f0ad })));
     for (let i = 1; i < waypoints.length; i++) {
@@ -148,9 +167,21 @@ function redrawAnnotations(state) {
   // Overlay markers stay readable on noisy scan geometry. Segments are manually
   // drawn and have no obstacle validation; visibility is not proof of clearance.
   group.traverse((object) => {
-    if (object.material) { object.material.depthTest = false; object.renderOrder = 4; }
+    if (object.material) {
+      object.material.depthTest = false; object.renderOrder = 4;
+      object.material.transparent = true; object.material.opacity = nextFire ? 1 : 0.4;
+      if (object.isSprite && nextFire) object.scale.multiplyScalar(1.35);
+    }
   });
   const exits = items.filter((item) => item.type === 'exit').length;
+  try {
+    saveDefaultExits(window.localStorage, state.scan?.model.visible ? '10_17_2026' : 'sample-room', items);
+    state.panel.querySelector('[data-exit-defaults]').textContent =
+      `${exits} default exits saved in this browser. Refresh restores exits; Clear marks removes saved exits.`;
+  } catch {
+    state.panel.querySelector('[data-exit-defaults]').textContent =
+      'Could not save default exits. Export annotations before refreshing.';
+  }
   syncAnnotations(state);
   const blocked = items.filter((item) => item.type === 'blocked').length;
   state.panel.querySelector('[data-layout]').textContent =
@@ -171,14 +202,36 @@ function refreshEffects(state) {
       ? Math.min(86400, (performance.now() - state.effectsStartedAt) / 1000) : 0,
     floorY: state.floorY, ceilingY: Math.max(state.floorY + 2, state.bounds.max.y),
     center: [center.x, center.z], size: Math.min(100, Math.max(1, size.x, size.z)),
-    fires: state.firePositions[scanned ? 'scan' : 'sample'] };
+    fires: state.drillFireKey
+      ? state.layouts[scanned ? 'scan' : 'sample'].filter((item) => item.type === 'fire').map((item) => item.position)
+      : state.firePositions[scanned ? 'scan' : 'sample'] };
   state.effects.apply(snapshot);
   state.poseChannel?.sendEffects?.(snapshot);
   state.panel.querySelector('[data-effects-status]').textContent =
     `${snapshot.fires.length} fire sources · ${snapshot.running ? 'Smoke running' : 'Smoke stopped'} · Fixed fire patches (no spreading)`;
 }
 
+function autoFireAndSmoke(state) {
+  const scanned = Boolean(state.scan?.model.visible);
+  const room = scanned ? 'scan' : 'sample';
+  if (!state.firePositions[room].length) {
+    state.firePositions[room] = chooseFirePositions({ surface: scanned ? state.scan.model : state.sample,
+      bounds: state.bounds, floorY: state.floorY, start: state.spawn.toArray(),
+      exits: state.layouts[room].filter((item) => item.type === 'exit').map((item) => item.position),
+      scale: state.alignment?.scale || 1 });
+  }
+  if (!state.firePositions[room].length) {
+    state.panel.querySelector('[data-effects-status]').textContent = 'No suitable floor found for automatic fire. Set start on a clear floor to correct floor height, then retry or use Place fire.';
+    return;
+  }
+  if (!state.effectsRunning) state.effectsStartedAt = performance.now();
+  state.effectsRunning = true;
+  invalidateAutoRoute(state);
+  refreshEffects(state);
+}
+
 function invalidateAutoRoute(state) {
+  state.routeRevision++;
   const items = state.layouts[state.scan?.model.visible ? 'scan' : 'sample'];
   for (let i = items.length - 1; i >= 0; i--) {
     if (items[i].source === 'geometry-draft') items.splice(i, 1);
@@ -194,7 +247,8 @@ function setAnnotationTool(state, tool = null) {
     button.setAttribute('aria-pressed', String(button.dataset.mark === tool));
     button.style.background = button.dataset.mark === tool ? '#22694f' : '#263b4e';
   }
-  state.panel.querySelector('[data-edit]').textContent = tool === 'fire'
+  state.panel.querySelector('[data-edit]').textContent = tool === 'drill-fire'
+    ? 'Click to ignite one drill fire. Another placement replaces it; Undo mark restores the previous placement.' : tool === 'fire'
     ? 'Click a surface to place a fire. Routes near fire sources are invalidated. Press Esc when done.' : tool === 'exit'
     ? 'Click the floor at a known exit. Choose another tool or press Esc when done.'
     : tool === 'blocked' ? 'Click the floor at a blocked passage. Press Esc when done.'
@@ -202,115 +256,17 @@ function setAnnotationTool(state, tool = null) {
         : 'Manual demo annotations only; routes are not checked for obstacles. Export before refreshing to keep a copy.';
 }
 
-/** Geometry-only draft planning; requires user-supplied exit positions.
- * Missing floor and geometry in the standing-height band are impassable.
- * Four-neighbor search never cuts diagonally between occupied cells.
- */
-export function planRoomRoute({ surface, bounds, floorY, start, exits, blocked = [], hazards = [], hazardRadius = 1.5 }) {
-  if (!exits.length) return { error: 'Mark at least one known exit first.' };
-  const step = 0.2;
-  const width = Math.ceil((bounds.max.x - bounds.min.x) / step);
-  const depth = Math.ceil((bounds.max.z - bounds.min.z) / step);
-  const total = width * depth;
-  if (!total || total > 40000) return { error: 'Room scale is too large for this demo. Verify model units first.' };
-  const floor = new Uint8Array(total), obstacles = new Uint8Array(total);
-  const minX = bounds.min.x, minZ = bounds.min.z;
-  const point = (id) => new THREE.Vector3(minX + (id % width + 0.5) * step,
-    floorY + 0.02, minZ + (Math.floor(id / width) + 0.5) * step);
-  const cell = (p) => {
-    const x = Math.floor((p[0] - minX) / step), z = Math.floor((p[2] - minZ) / step);
-    return x < 0 || z < 0 || x >= width || z >= depth ? -1 : z * width + x;
-  };
-  const edgeDistanceSq = (x, z, a, b) => {
-    const dx = b.x - a.x, dz = b.z - a.z;
-    const t = THREE.MathUtils.clamp(((x - a.x) * dx + (z - a.z) * dz) / (dx * dx + dz * dz || 1), 0, 1);
-    return (x - a.x - t * dx) ** 2 + (z - a.z - t * dz) ** 2;
-  };
-  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
-  const ab = new THREE.Vector3(), ac = new THREE.Vector3(), normal = new THREE.Vector3();
-  surface.updateWorldMatrix(true, true);
-  surface.traverse((object) => {
-    if (!object.isMesh) return;
-    const attr = object.geometry.attributes.position, index = object.geometry.index;
-    const count = index ? index.count : attr.count;
-    for (let i = 0; i + 2 < count; i += 3) {
-      a.fromBufferAttribute(attr, index ? index.getX(i) : i).applyMatrix4(object.matrixWorld);
-      b.fromBufferAttribute(attr, index ? index.getX(i + 1) : i + 1).applyMatrix4(object.matrixWorld);
-      c.fromBufferAttribute(attr, index ? index.getX(i + 2) : i + 2).applyMatrix4(object.matrixWorld);
-      const low = Math.min(a.y, b.y, c.y), high = Math.max(a.y, b.y, c.y);
-      const body = high > floorY + 0.22 && low < floorY + 1.9;
-      normal.crossVectors(ab.subVectors(b, a), ac.subVectors(c, a)).normalize();
-      const ground = Math.abs(normal.y) > 0.75 && low <= floorY + 0.18 && high >= floorY - 0.18;
-      if (!ground && !body) continue;
-      const x0 = Math.max(0, Math.floor((Math.min(a.x, b.x, c.x) - minX) / step));
-      const x1 = Math.min(width - 1, Math.floor((Math.max(a.x, b.x, c.x) - minX) / step));
-      const z0 = Math.max(0, Math.floor((Math.min(a.z, b.z, c.z) - minZ) / step));
-      const z1 = Math.min(depth - 1, Math.floor((Math.max(a.z, b.z, c.z) - minZ) / step));
-      const denominator = (b.z - c.z) * (a.x - c.x) + (c.x - b.x) * (a.z - c.z);
-      for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) {
-        const px = minX + (x + 0.5) * step, pz = minZ + (z + 0.5) * step;
-        const u = denominator ? ((b.z - c.z) * (px - c.x) + (c.x - b.x) * (pz - c.z)) / denominator : -1;
-        const v = denominator ? ((c.z - a.z) * (px - c.x) + (a.x - c.x) * (pz - c.z)) / denominator : -1;
-        const inside = u >= -1e-6 && v >= -1e-6 && u + v <= 1.000001;
-        const id = z * width + x;
-        const y = u * a.y + v * b.y + (1 - u - v) * c.y;
-        if (ground && inside && Math.abs(y - floorY) <= 0.18) floor[id] = 1;
-        if (body && (inside || Math.min(edgeDistanceSq(px, pz, a, b), edgeDistanceSq(px, pz, b, c),
-          edgeDistanceSq(px, pz, c, a)) <= step * step / 2)) obstacles[id] = 1;
-      }
-    }
-  });
-  for (let id = 0; id < total; id++) {
-    const p = point(id);
-    if (blocked.some((b) => Math.hypot(p.x - b[0], p.z - b[2]) < 0.6)) obstacles[id] = 1;
-    if (hazards.some((h) => Math.hypot(p.x - h[0], p.z - h[2]) < hazardRadius)) obstacles[id] = 1;
-  }
-  // One-cell buffer around obstacles, missing floor, and scan boundaries.
-  const walkable = new Uint8Array(total);
-  for (let z = 1; z < depth - 1; z++) for (let x = 1; x < width - 1; x++) {
-    let clear = true;
-    for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
-      const id = (z + dz) * width + x + dx;
-      if (!floor[id] || obstacles[id]) clear = false;
-    }
-    walkable[z * width + x] = Number(clear);
-  }
-  const from = cell(start);
-  if (from < 0 || !walkable[from]) return { error: 'Start is not on clear scanned floor. Use Set start on floor on a clear area; verify floor height.' };
-  const targets = new Set(exits.map(cell).filter((id) => id >= 0 && walkable[id]));
-  if (!targets.size) return { error: 'Marked exits are outside clear floor. Mark the approach area just inside a known exit.' };
-  const previous = new Int32Array(total).fill(-1), queue = new Int32Array(total);
-  previous[from] = from;
-  queue[0] = from;
-  let head = 0, tail = 1, found = -1;
-  while (head < tail) {
-    const id = queue[head++];
-    if (targets.has(id)) { found = id; break; }
-    const x = id % width, z = Math.floor(id / width);
-    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-      const nx = x + dx, nz = z + dz, next = nz * width + nx;
-      if (nx < 0 || nz < 0 || nx >= width || nz >= depth || !walkable[next] || previous[next] !== -1) continue;
-      previous[next] = id; queue[tail++] = next;
-    }
-  }
-  if (found < 0) return { error: 'No connected route found through scanned floor. Check scan holes, start, exits and blocked marks, or draw a route manually.' };
-  const cells = [found];
-  while (cells[cells.length - 1] !== from) cells.push(previous[cells[cells.length - 1]]);
-  cells.reverse();
-  if (cells.length < 2) return { error: 'Start is already at the marked exit. Choose a different start to draw a route.' };
-  const turns = cells.filter((id, i) => i === 0 || i === cells.length - 1 || id - cells[i - 1] !== cells[i + 1] - id);
-  return { points: turns.map((id) => point(id).toArray()), cells: cells.length, step };
-}
 
-function calculateRoute(state) {
+function calculateRoute(state, automatic = false) {
   setAnnotationTool(state);
+  // Never leave an old route visible after a failed replan.
+  invalidateAutoRoute(state);
   const live = state.mode === 'live';
-  if (live && (!state.alignment || state.lastPose === null || !state.rawPose
-    || performance.now() - state.rawPoseAt > 2000)) {
+  if ((automatic || live) && !hasGuidancePose(state, performance.now())) {
     state.panel.querySelector('[data-edit]').textContent = 'Current headset position unavailable. Restore tracking and align before planning a route.';
     return;
   }
-  const routeStart = (live ? state.position : state.spawn).clone();
+  const routeStart = state.position.clone();
   routeStart.y = state.floorY;
   const scanned = Boolean(state.scan?.model.visible);
   const room = scanned ? 'scan' : 'sample';
@@ -320,30 +276,37 @@ function calculateRoute(state) {
     bounds: state.bounds, floorY: state.floorY, start: routeStart.toArray(),
     exits: items.filter((item) => item.type === 'exit').map((item) => item.position),
     blocked: items.filter((item) => item.type === 'blocked').map((item) => item.position),
-    hazards: state.firePositions[room], hazardRadius: 1.5 * (state.alignment?.scale || 1),
+    hazards: state.drillFireKey ? items.filter((item) => item.type === 'fire').map((item) => item.position)
+      : state.firePositions[room], hazardRadius: 0.8 * (state.alignment?.scale || 1), relaxed: true,
   });
   if (result.error) { state.panel.querySelector('[data-edit]').textContent = result.error; return; }
   state.layouts[room] = items.filter((item) => item.type !== 'waypoint').concat(
     result.points.map((position) => ({ type: 'waypoint', position, source: 'geometry-draft' })));
   redrawAnnotations(state);
   state.panel.querySelector('[data-edit]').textContent =
-    `Draft route from ${live ? 'current headset position' : 'selected start'} (X ${routeStart.x.toFixed(2)}, Z ${routeStart.z.toFixed(2)}). Click Auto route again after moving to replan. Verify the real path; scan gaps and unseen obstacles limit this preview.`;
+    `Relaxed demo route from ${live ? 'current headset position' : 'current blue dot'} to EXIT, avoiding ${state.firePositions[room].length} fire sources and obstacles (${((result.cells - 1) * result.step).toFixed(1)} model units). Reduced clearance: 0.8 fire radius, no extra obstacle padding. Click Auto route after moving. Preview only; verify the real path.`;
 }
 
-async function autoRoute(state) {
+async function autoRoute(state, automatic = false) {
   const button = state.panel.querySelector('[data-action="auto-route"]');
   const status = state.panel.querySelector('[data-route-status]');
   if (button.disabled) return;
+  const revision = state.routeRevision;
+  const room = state.roomChoice;
   button.disabled = true;
   button.textContent = 'Planning...';
   status.hidden = false;
-  status.textContent = 'Checking the floor, obstacles and marked exits...';
-  status.scrollIntoView({ block: 'nearest' });
+  status.textContent = 'Finding a route to EXIT around fire exclusion zones, obstacles and scan gaps...';
+  if (!automatic) status.scrollIntoView({ block: 'nearest' });
   // Allow the browser to show progress before scanning mesh triangles.
   await new Promise((resolve) => setTimeout(resolve, 30));
   try {
-    if (state.disposed) return;
-    calculateRoute(state);
+    if (state.disposed || revision !== state.routeRevision || room !== state.roomChoice
+      || (automatic && !state.drillFireKey)) {
+      status.textContent = 'Route cancelled because the room, fire or tracking changed.';
+      return;
+    }
+    calculateRoute(state, automatic);
     status.textContent = state.panel.querySelector('[data-edit]').textContent;
   } catch (error) {
     status.textContent = `Route planning failed: ${error.message}. Your marks have been kept.`;
@@ -460,6 +423,8 @@ export function start(options = {}) {
       <p data-alignment role="status">Alignment not set. Stand at the chosen start, face the specified direction, then align on this computer.</p>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
         <button type="button" data-mark="exit" aria-pressed="false">Mark exit</button>
+        <button type="button" data-mark="drill-fire" aria-pressed="false">Fire (start drill)</button>
+        <button type="button" data-action="remove-drill-fire">Remove drill fire</button>
         <button type="button" data-mark="blocked" aria-pressed="false">Mark blocked</button>
         <button type="button" data-mark="waypoint" aria-pressed="false">Draw route</button>
         <button type="button" data-action="auto-route">Auto route</button>
@@ -467,12 +432,16 @@ export function start(options = {}) {
         <button type="button" data-action="undo">Undo mark</button>
         <button type="button" data-action="clear-marks">Clear marks</button>
         <button type="button" data-action="export">Export annotations</button>
+        <button type="button" data-action="import-exits">Import default exits</button>
+        <input data-import-exits type="file" accept=".json,application/json" hidden>
       </div>
+      <p data-exit-defaults role="status"></p>
       <p data-edit role="status"></p>
       <p data-route-status role="status" hidden style="padding:12px;border:1px solid #edbe65;background:#302b20;color:#ffe0a3"></p>
       <p data-layout></p>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button type="button" data-mark="fire" aria-pressed="false">Place fire</button>
+        <button type="button" data-mark="fire" aria-pressed="false">Place demo fire</button>
+        <button type="button" data-action="auto-effects">Auto fire &amp; smoke</button>
         <button type="button" data-action="start-effects">Start smoke</button>
         <button type="button" data-action="stop-effects">Stop smoke</button>
         <button type="button" data-action="clear-fires">Clear fires</button>
@@ -556,10 +525,42 @@ export function start(options = {}) {
     poseChannel: null, rawPose: null, rawPoseAt: 0, alignment: null, headsetEnabled: false,
     firePositions: { sample: [], scan: [] }, effectsRunning: false, effectsStartedAt: 0,
     effects: createRoomEffects(root), soundEnabled: false,
+    autoEffectsApplied: false,
+    drillFireKey: '', routeRevision: 0, nextGuidanceAt: 0,
   };
+  for (const [room, roomId] of [['sample', 'sample-room'], ['scan', '10_17_2026']]) {
+    try { state.layouts[room] = readDefaultExits(window.localStorage, roomId); }
+    catch { /* Missing or invalid defaults never prevent the room from loading. */ }
+  }
+  panel.querySelector('[data-import-exits]').addEventListener('change', async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    const scanned = Boolean(state.scan?.model.visible);
+    const room = scanned ? 'scan' : 'sample';
+    try {
+      if (file.size > 1024 * 1024) throw new Error('Annotation file is too large.');
+      const exits = exitDefaults(JSON.parse(await file.text()), scanned ? '10_17_2026' : 'sample-room');
+      if (!exits.length) throw new Error('This file has no marked exits.');
+      if (scanned !== Boolean(state.scan?.model.visible)) throw new Error('Room changed. Import again.');
+      const other = state.layouts[room].filter((item) => item.type !== 'exit' && item.source !== 'geometry-draft');
+      if (other.length + exits.length > 500) throw new Error('Too many marks. Clear marks before importing.');
+      state.layouts[room] = [...other, ...exits];
+      // Re-place demo hazards around restored exits, using the existing smoke state.
+      if (state.firePositions[room].length) state.firePositions[room] = chooseFirePositions({ surface: scanned ? state.scan.model : state.sample,
+        bounds: state.bounds, floorY: state.floorY, start: state.spawn.toArray(),
+        exits: exits.map((item) => item.position), scale: state.alignment?.scale || 1 });
+      redrawAnnotations(state);
+      refreshEffects(state);
+      if (!state.drillFireKey) void autoRoute(state);
+    } catch (error) {
+      panel.querySelector('[data-exit-defaults]').textContent = `Import failed: ${error.message}`;
+    }
+  });
   const invalidateAlignment = (message) => {
     state.alignment = null; state.rawPose = null; state.lastPose = null;
     panel.querySelector('[data-alignment]').textContent = message;
+    invalidateAutoRoute(state);
   };
   const stopHeadset = () => {
     state.headsetEnabled = false; state.poseChannel?.close(); state.poseChannel = null;
@@ -646,6 +647,8 @@ export function start(options = {}) {
     controls.update();
   };
   const resetSimulation = () => {
+    for (const key of ['sample', 'scan']) state.layouts[key] = state.layouts[key].filter((item) => item.type !== 'fire');
+    invalidateAutoRoute(state);
     stopHeadset();
     state.mode = 'simulation';
     state.position.copy(state.spawn);
@@ -676,6 +679,7 @@ export function start(options = {}) {
     redrawAnnotations(state);
     refreshEffects(state);
     setView(state.viewTop);
+    // Keep the multi-fire demo available explicitly; drill ignition is observer-controlled.
   };
   const onClick = (event) => {
     const action = event.target.dataset.action;
@@ -687,6 +691,8 @@ export function start(options = {}) {
       resize();
     }
     const mark = event.target.dataset.mark;
+    if (action === 'import-exits') panel.querySelector('[data-import-exits]').click();
+    if (action === 'auto-effects') autoFireAndSmoke(state);
     if (action === 'start-effects') {
       if (!state.firePositions[state.scan?.model.visible ? 'scan' : 'sample'].length) {
         panel.querySelector('[data-effects-status]').textContent = 'Place at least one fire first.';
@@ -710,8 +716,17 @@ export function start(options = {}) {
     const items = state.layouts[state.scan?.model.visible ? 'scan' : 'sample'];
     if (action === 'finish') setAnnotationTool(state);
     if (action === 'auto-route') autoRoute(state);
-    if (action === 'undo') { items.pop(); redrawAnnotations(state); }
-    if (action === 'clear-marks') { items.length = 0; setAnnotationTool(state); redrawAnnotations(state); }
+    if (action === 'undo') {
+      if (state.drillFireKey) for (let i = items.length - 1; i >= 0; i--)
+        if (items[i].source === 'geometry-draft') items.splice(i, 1);
+      undoAnnotation(items); invalidateAutoRoute(state);
+    }
+    if (action === 'clear-marks') { items.length = 0; setAnnotationTool(state); invalidateAutoRoute(state); }
+    if (action === 'remove-drill-fire') {
+      const index = items.findIndex((item) => item.type === 'fire');
+      if (index >= 0) items.splice(index, 1);
+      invalidateAutoRoute(state);
+    }
     if (action === 'export') {
       const data = getRoomAnnotations();
       const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
@@ -774,6 +789,12 @@ export function start(options = {}) {
       return;
     }
     if (state.annotationTool) {
+      if (state.annotationTool === 'drill-fire') {
+        const items = state.layouts[state.scan?.model.visible ? 'scan' : 'sample'];
+        if (items.length >= 500 && !fireKey(items)) return;
+        if (placeDrillFire(items, hit.point.toArray())) invalidateAutoRoute(state);
+        return;
+      }
       if (state.annotationTool === 'fire') {
         const fires = state.firePositions[state.scan?.model.visible ? 'scan' : 'sample'];
         if (fires.length >= 20) { panel.querySelector('[data-effects-status]').textContent = 'Maximum 20 fires. Clear fires to start again.'; return; }
@@ -942,6 +963,11 @@ export function updateHeadPose(pose) {
 export function update(dt = 0) {
   if (!active) return;
   const s = active;
+  const now = performance.now();
+  if (s.drillFireKey && now >= s.nextGuidanceAt && !s.shared) {
+    s.nextGuidanceAt = now + 3000;
+    void autoRoute(s, true);
+  }
   const step = Number.isFinite(dt) ? THREE.MathUtils.clamp(dt, 0, 0.05) : 0;
   if (s.mode === 'simulation') {
     const key = (code) => Number(s.keys.has(code));

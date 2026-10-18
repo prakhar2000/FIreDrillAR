@@ -8,10 +8,14 @@ Physical scale, alignment accuracy and sustained headset stability still require
 on-device verification. Shared team files are unchanged.
 
 Progress:
+- In progress: single-fire annotation lifecycle and automatic headset guidance; preserved checkpoint before integrating main.
 - Done: desktop sample/scan view, keyboard simulation and headset-following camera.
 - Done: paired pose transport, calibration, live scan annotations and draft routes.
 - Done: automated relay/transform tests and both-entry production build.
 - Done: team fire/smoke rendering, opt-in audio and paired effect snapshots.
+- Done: up to six automatic fire patches and browser-persisted default exits with JSON import.
+- Done: fire-avoiding routes from the current blue dot/headset; automatic planning after scan exit restore/import.
+- Done: relaxed desktop route preview with reduced fire clearance and no extra obstacle padding.
 - Pending: physical room validation; native Vision Pro scanning is not implemented.
 
 ## Start
@@ -80,10 +84,24 @@ headset on edits, including undo and clear. A snapshot is also sent on the obser
 one-second connection heartbeat so late-joining headsets receive current marks.
 Markers share the room's calibration transform and use depth testing. Sample-room
 annotations are not displayed over the scan. Use one editing observer per pairing
-code; multiple observers can overwrite each other's snapshots. Markers are in-memory:
-export before refreshing the computer page, since a refresh discards local annotations.
+code; multiple observers can overwrite each other's snapshots. Marked exits are
+automatically saved in this browser for each room and restored before automatic fires
+are placed. Use **Import default exits** to restore exits from an earlier annotation
+export; this replaces exits and repositions demo fires away from them. It does not
+import routes or blocked markers. **Undo mark** and **Clear marks** update the saved
+exits too. Storage is specific to the browser and URL origin (host and port); use
+export/import when changing computers, browsers or URLs. Other marks remain in-memory.
 
 ## Fire and smoke demo
+
+The first scan display automatically places up to six fixed fires on observed floor
+and starts smoke. It excludes candidate points near the selected start, marked exits
+and other fires, and rejects scan holes or overhead furniture near floor level.
+This is demo placement, not a real-world safety assessment. **Auto fire & smoke**
+retries placement or restarts existing fires without duplicating them. Clear fires
+and Stop smoke remain effective; switching views does not reapply the initial preset.
+Sound still requires **Enable sound**. If no suitable floor is found, set the start
+on clear floor to correct the floor estimate or place fires manually.
 
 1. In the left overview, choose **Place fire**, then click a room surface. Press Esc
    when finished. Up to 20 fixed fire patches are supported per room.
@@ -95,15 +113,18 @@ export before refreshing the computer page, since a refresh discards local annot
    Fire positions and the smoke timeline sync on edits and every observer heartbeat.
    A headset joining later receives the current snapshot. Sample-room effects are
    desktop-only and clear the headset's scan effects.
-5. Auto route excludes a radius of 1.5 model units around fire sources (scaled by the
+5. Auto route uses a relaxed demo profile: a radius of 0.8 model units around fire sources (scaled by the
    alignment's model units/metre when available). Placing or clearing fire invalidates
-   generated routes. Replan explicitly; this does not model heat, smoke or safe egress.
+   generated routes. Floor tolerance is 0.30 model units; extra one-cell obstacle
+   padding is removed. Actual obstacles and missing floor remain blocked. Fire cells
+   include a half-cell diagonal margin to keep route segments outside the radius.
+   Replan explicitly; reduced clearance is for preview, not verified safe egress.
 
 The integration reuses the team's renderer through a versioned snapshot documented
 in `vendor/README.md`. Fire spread/burn-out is disabled so clients share fixed hazard
 positions. Smoke height follows the observer's elapsed time; particles and flicker
 are decorative and can differ. No desktop bloom compositor is used in split view.
-Effects and marks are temporary and are cleared by a page refresh. Voice, Python
+Effects and non-exit marks reset on refresh; saved exits remain. Voice, Python
 backend and DataFeel integration are not enabled by this effects adapter.
 
 ## Interfaces and ownership
@@ -155,9 +176,12 @@ Auto route uses the latest calibrated headset position when live tracking is act
 The button shows Planning while computing and a highlighted result explains success
 or failure (missing exit, unavailable tracking, unclear floor or disconnected path).
 Missing calibration or poses older than two seconds block planning. In simulation it
-uses the selected start. Mark known exits first and click Auto route to generate a
+uses the current blue dot, including keyboard movement. Restoring saved scan exits
+or importing exits automatically plans after placing fires. Mark known exits first and click Auto route to generate a
 geometry-based route; click again after moving to replan. This is a snapshot route,
-not continuous navigation. Existing scan annotation sync sends the draft to the
+not continuous navigation. Failed replans remove the previous generated route.
+Fire-covered endpoints and disconnected paths produce an explicit failure instead
+of a path through hazards. Existing scan annotation sync sends the draft to the
 headset. The model cannot determine whether an exit is actually safe or available.
 
 The headset sign reports tracking interruptions and whether poses have been sent.
@@ -168,7 +192,7 @@ the 32-character pairing-code limit does not apply to session IDs. Regression
 tests use real UUIDs to verify forwarding.
 
 Run relay and coordinate-transform regression tests from `web`:
-`node --test eileen/pose.test.mjs eileen/effects.test.mjs`.
+`node --test eileen/pose.test.mjs eileen/effects.test.mjs eileen/routes.test.mjs`.
 
 Build both entries: `npm run build -- --config vite.eileen.config.js`.
 Static builds show connection unavailable: this relay requires the development server.
