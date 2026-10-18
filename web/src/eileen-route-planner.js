@@ -107,4 +107,3 @@ export function planRoomRoute({ surface, bounds, floorY, start, exits, blocked =
   const turns = cells.filter((id, i) => i === 0 || i === cells.length - 1 || id - cells[i - 1] !== cells[i + 1] - id);
   return { points: turns.map((id) => point(id).toArray()), cells: cells.length, step };
 }
-

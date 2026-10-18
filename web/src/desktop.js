@@ -115,6 +115,9 @@ function releaseObjects(root) {
 function redrawAnnotations(state) {
   const room = state.scan?.model.visible ? 'scan' : 'sample';
   const nextFire = fireKey(state.layouts[room]);
+  for (const selector of ['[data-mark="fire"]', '[data-action="auto-effects"]', '[data-action="start-effects"]', '[data-action="stop-effects"]']) {
+    state.panel.querySelector(selector).disabled = !!nextFire;
+  }
   if (nextFire !== state.drillFireKey) {
     state.drillFireKey = nextFire;
     state.routeRevision++;
@@ -143,26 +146,11 @@ function redrawAnnotations(state) {
       waypoints.push(position.clone().addScaledVector(UP, 0.09));
     } else {
       label(group, blocked ? 'X  BLOCKED' : 'EXIT',
-        [position.x, state.floorY + (nextFire ? 1.3 : 0.65), position.z], blocked ? '#ff9090' : '#74f3c6');
+        [position.x, state.floorY + (nextFire ? 2.1 : 0.8) * (state.alignment?.scale || 1), position.z], blocked ? '#ff9090' : '#74f3c6');
     }
   }
   if (waypoints.length > 1) {
     addRouteChevrons(group, waypoints);
-    group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(waypoints),
-      new THREE.LineBasicMaterial({ color: 0x55f0ad })));
-    for (let i = 1; i < waypoints.length; i++) {
-      const direction = waypoints[i].clone().sub(waypoints[i - 1]);
-      const length = direction.length();
-      if (length < 0.05) continue;
-      direction.normalize();
-      const count = Math.min(30, Math.max(1, Math.ceil(length / 0.8)));
-      const arrowLength = Math.min(0.45, length / count * 0.75);
-      for (let j = 0; j < count; j++) {
-        const origin = waypoints[i - 1].clone().addScaledVector(direction, (j + 0.15) * length / count);
-        group.add(new THREE.ArrowHelper(direction, origin, arrowLength, 0x55f0ad,
-          Math.min(0.15, arrowLength * 0.4), Math.min(0.14, arrowLength * 0.35)));
-      }
-    }
   }
   // Overlay markers stay readable on noisy scan geometry. Segments are manually
   // drawn and have no obstacle validation; visibility is not proof of clearance.
@@ -208,7 +196,8 @@ function refreshEffects(state) {
   state.effects.apply(snapshot);
   state.poseChannel?.sendEffects?.(snapshot);
   state.panel.querySelector('[data-effects-status]').textContent =
-    `${snapshot.fires.length} fire sources · ${snapshot.running ? 'Smoke running' : 'Smoke stopped'} · Fixed fire patches (no spreading)`;
+    state.drillFireKey ? 'Observer shows the ignition point. The headset runs the spreading fire and drill.'
+      : `${snapshot.fires.length} fire sources · ${snapshot.running ? 'Smoke running' : 'Smoke stopped'} · Fixed demo fire patches`;
 }
 
 function autoFireAndSmoke(state) {
@@ -253,12 +242,12 @@ function setAnnotationTool(state, tool = null) {
     ? 'Click the floor at a known exit. Choose another tool or press Esc when done.'
     : tool === 'blocked' ? 'Click the floor at a blocked passage. Press Esc when done.'
       : tool === 'waypoint' ? 'Click floor points in travel order, including turns around obstacles and the exit. Finish route or Esc ends drawing.'
-        : 'Manual demo annotations only; routes are not checked for obstacles. Export before refreshing to keep a copy.';
+        : 'Mark known exits on the floor. Fire starts headset guidance; Auto route also works in simulation. Draw route is manual.';
 }
 
 
 function calculateRoute(state, automatic = false) {
-  setAnnotationTool(state);
+  if (!automatic) setAnnotationTool(state);
   // Never leave an old route visible after a failed replan.
   invalidateAutoRoute(state);
   const live = state.mode === 'live';
@@ -271,11 +260,17 @@ function calculateRoute(state, automatic = false) {
   const scanned = Boolean(state.scan?.model.visible);
   const room = scanned ? 'scan' : 'sample';
   const items = state.layouts[room];
+  const blocked = items.filter((item) => item.type === 'blocked').map((item) => item.position);
+  const exits = items.filter((item) => item.type === 'exit').map((item) => item.position)
+    .filter((exit) => !blocked.some((point) => Math.hypot(exit[0] - point[0], exit[2] - point[2]) < 1.5 * (state.alignment?.scale || 1)));
+  if (!exits.length && items.some((item) => item.type === 'exit')) {
+    state.panel.querySelector('[data-edit]').textContent = 'All marked exits are blocked. Mark an available EXIT before planning.';
+    return;
+  }
   const result = planRoomRoute({
     surface: scanned ? state.scan.model : state.sample,
     bounds: state.bounds, floorY: state.floorY, start: routeStart.toArray(),
-    exits: items.filter((item) => item.type === 'exit').map((item) => item.position),
-    blocked: items.filter((item) => item.type === 'blocked').map((item) => item.position),
+    exits, blocked,
     hazards: state.drillFireKey ? items.filter((item) => item.type === 'fire').map((item) => item.position)
       : state.firePositions[room], hazardRadius: 0.8 * (state.alignment?.scale || 1), relaxed: true,
   });
@@ -284,7 +279,7 @@ function calculateRoute(state, automatic = false) {
     result.points.map((position) => ({ type: 'waypoint', position, source: 'geometry-draft' })));
   redrawAnnotations(state);
   state.panel.querySelector('[data-edit]').textContent =
-    `Relaxed demo route from ${live ? 'current headset position' : 'current blue dot'} to EXIT, avoiding ${state.firePositions[room].length} fire sources and obstacles (${((result.cells - 1) * result.step).toFixed(1)} model units). Reduced clearance: 0.8 fire radius, no extra obstacle padding. Click Auto route after moving. Preview only; verify the real path.`;
+    `Relaxed demo route from ${live ? 'current headset position' : 'current blue dot'} to EXIT (${((result.cells - 1) * result.step).toFixed(1)} model units). Avoids ignition points and scanned obstacles; not live fire spread. ${automatic ? 'Updates every 3 seconds.' : 'Click Auto route after moving.'} Preview only; verify the real path.`;
 }
 
 async function autoRoute(state, automatic = false) {
@@ -396,12 +391,26 @@ export function start(options = {}) {
   }
   const host = options.container || document.getElementById('app') || document.body;
   const panel = document.createElement('section');
-  panel.style.cssText = 'position:relative;background:#101b29;color:#e4eef8;font:14px system-ui,sans-serif;';
+  panel.className = 'eileen-observer';
+  panel.style.cssText = 'position:relative;background:#101b29;color:#e4eef8;font:16px/1.5 system-ui,sans-serif;';
   panel.innerHTML = `
+    <style>
+      .eileen-observer button { font:600 16px/1.3 system-ui; min-height:46px; }
+      .eileen-observer button:disabled { opacity:.45; cursor:not-allowed !important; }
+      .eileen-observer button:focus-visible { outline:3px solid #90dbff; outline-offset:3px; }
+      .eileen-observer button[aria-pressed="true"] { box-shadow:0 0 0 2px #90dbff; }
+      .eileen-observer [data-mark="drill-fire"] { background:#913c22 !important; border-color:#ffb283 !important; }
+      .eileen-observer [data-mark="exit"], .eileen-observer [data-action="auto-route"] { background:#16563f !important; }
+      .eileen-observer [data-mark="blocked"] { background:#74303a !important; }
+      .eileen-observer input { background:#1b3044; color:#fff; border:1px solid #7293ad; padding:8px; font:inherit; border-radius:6px; }
+      .eileen-observer [data-drill-status] { padding:12px 16px; background:#182e42; border-left:5px solid #58bfff; font-size:19px; font-weight:650; }
+      .eileen-observer header > p { margin:9px 0; }
+    </style>
     <header style="padding:18px 22px;border-bottom:1px solid #334456">
-      <strong style="font-size:22px">Room observer</strong>
+      <strong style="font-size:28px">FireDrill · Room observer</strong>
       <span data-room style="margin-left:14px;color:#a9bdcd">Sample room · 6 × 4 m · 1 m grid</span>
       <p>Blue marker = floor position · Arrow = head direction · Sphere = head height</p>
+      <p data-drill-status role="status">Ready · mark exits, align the headset, then place Fire.</p>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button type="button" data-action="angle">Angled view</button>
         <button type="button" data-action="top">Top view</button>
@@ -455,10 +464,11 @@ export function start(options = {}) {
         Drag to orbit · Scroll to zoom. Observer preview only; no collision or escape checks.</p>
     </header>`;
   for (const button of panel.querySelectorAll('button')) {
-    button.style.cssText = 'background:#263b4e;border:1px solid #60788e;color:#eef7ff;border-radius:6px;padding:9px 12px;cursor:pointer';
+    button.style.cssText = 'background:#263b4e;border:1px solid #60788e;color:#eef7ff;border-radius:8px;padding:11px 16px;cursor:pointer';
   }
   host.append(panel);
   const viewport = document.createElement('div');
+  viewport.dataset.viewport = '';
   viewport.style.cssText = 'height:65vh;min-height:320px;position:relative;';
   const viewLabels = document.createElement('div');
   viewLabels.style.cssText = 'position:absolute;inset:8px 0 auto;display:flex;pointer-events:none;z-index:1;font:14px system-ui;color:white';
@@ -704,6 +714,8 @@ export function start(options = {}) {
     if (action === 'stop-effects') { state.effectsRunning = false; refreshEffects(state); }
     if (action === 'clear-fires') {
       state.firePositions[state.scan?.model.visible ? 'scan' : 'sample'] = [];
+      const items = state.layouts[state.scan?.model.visible ? 'scan' : 'sample'];
+      for (let i = items.length - 1; i >= 0; i--) if (items[i].type === 'fire') items.splice(i, 1);
       state.effectsRunning = false; invalidateAutoRoute(state); refreshEffects(state);
     }
     if (action === 'effects-sound') {
@@ -792,7 +804,10 @@ export function start(options = {}) {
       if (state.annotationTool === 'drill-fire') {
         const items = state.layouts[state.scan?.model.visible ? 'scan' : 'sample'];
         if (items.length >= 500 && !fireKey(items)) return;
-        if (placeDrillFire(items, hit.point.toArray())) invalidateAutoRoute(state);
+        if (placeDrillFire(items, hit.point.toArray())) {
+          state.firePositions[state.scan?.model.visible ? 'scan' : 'sample'] = [];
+          invalidateAutoRoute(state);
+        }
         return;
       }
       if (state.annotationTool === 'fire') {
@@ -964,6 +979,10 @@ export function update(dt = 0) {
   if (!active) return;
   const s = active;
   const now = performance.now();
+  s.panel.querySelector('[data-drill-status]').textContent = !s.drillFireKey
+    ? 'Ready · mark exits, align the headset, then place Fire.'
+    : hasGuidancePose(s, now) ? 'Fire active · live headset guidance updates every 3 seconds.'
+      : 'Fire active · guidance paused: connect the headset and align fresh tracking.';
   if (s.drillFireKey && now >= s.nextGuidanceAt && !s.shared) {
     s.nextGuidanceAt = now + 3000;
     void autoRoute(s, true);

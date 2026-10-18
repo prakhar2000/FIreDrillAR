@@ -46,9 +46,19 @@ function jsonStore() {
 
 export default defineConfig({
   plugins: [basicSsl(), jsonStore()],
+  resolve: { dedupe: ['three'] },
+  optimizeDeps: {
+    include: [
+      'three',
+      'three/addons/loaders/OBJLoader.js',
+      'three/addons/loaders/MTLLoader.js',
+      'three/addons/controls/OrbitControls.js',
+    ],
+  },
   server: {
     host: true,
     port: 5173,
+    fs: { allow: [path.resolve(import.meta.dirname, '..')] },
     proxy: { '/py': { target: PY_SERVER, changeOrigin: true, ws: true, rewrite: (p) => p.replace(/^\/py/, '') } },
   },
 });

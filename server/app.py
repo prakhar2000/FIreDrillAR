@@ -1,28 +1,24 @@
-import json, os
+import atexit, json, os
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel
 
-load_dotenv()
+import agent
+
+from dots import Dots
+
+load_dotenv(override=True)   # .env wins over an empty ANTHROPIC_API_KEY in the shell
 KEY = os.getenv("ASSEMBLYAI_API_KEY", "")
+ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 app = FastAPI()
 
-MAX_HEAT_C = 40      # replace with Jiyi's safe number
-NEUTRAL_C = 33       # roughly skin temperature
-COOL_C = 20
-
-def drive_dots(left, right, buzz, cool):
-    """Translate the app's message into Dot commands. Replace the print with DataFeel SDK calls."""
-    t_left = NEUTRAL_C + left * (MAX_HEAT_C - NEUTRAL_C)
-    t_right = NEUTRAL_C + right * (MAX_HEAT_C - NEUTRAL_C)
-    if cool:
-        t_left = t_right = COOL_C
-    print(f"L {t_left:.1f}C  R {t_right:.1f}C  buzz={buzz}  cool={cool}")
-    # TODO (Devaj): set Dot temperatures, vibrate when buzz, LEDs red scaled by max(left, right)
+dots = Dots()              # DataFeel driver, see dots.py
+atexit.register(dots.off)
 
 @app.get("/health")
 def health():
-    return {"ok": True, "assemblyai_key": bool(KEY)}
+    return {"ok": True, "assemblyai_key": bool(KEY), "anthropic_key": bool(ANTHROPIC_KEY), "dots": dots.status}
 
 @app.get("/token")
 async def token():
@@ -35,12 +31,26 @@ async def token():
         raise HTTPException(r.status_code, r.text)
     return r.json()          # {"token": "..."}
 
+class AgentIn(BaseModel):   # XR world, metres, y up; points are [x, y, z]
+    transcript: str = ""
+    head: list[float] = [0, 0, 0]
+    facing: list[float] = [0, 0, -1]
+    fires: list[list[float]] = []
+    exits: list[list[float]] = []
+    blocked: list[list[float]] = []
+    smoke: float | None = None   # optional smoke depth 0-1
+
+@app.post("/agent")
+async def agent_reply(b: AgentIn):
+    f = agent.facts(b.head, b.facing, b.fires, b.exits, b.blocked, b.smoke)
+    return {"reply": await agent.reply(ANTHROPIC_KEY, b.transcript, f)}
+
 @app.websocket("/ws/heat")
 async def heat(ws: WebSocket):
     await ws.accept()
     try:
         while True:
             m = json.loads(await ws.receive_text())
-            drive_dots(m.get("left", 0), m.get("right", 0), m.get("buzz", False), m.get("cool", False))
+            dots.update(m.get("left", 0), m.get("right", 0), m.get("buzz", False), m.get("cool", False))
     except WebSocketDisconnect:
-        drive_dots(0, 0, False, False)
+        dots.update(0, 0, False, False)

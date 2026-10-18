@@ -58,6 +58,15 @@ test('relay isolates rooms, rejects invalid/duplicate poses and second publisher
   assert.deepEqual(publisher.messages.at(-1).data, marks);
   ws.emit('eileen:annotations', { ...marks, items: [] }, observer);
   assert.deepEqual(publisher.messages.at(-1).data.items, []);
+  const fireMarks = { ...marks, items: [...marks.items, { type: 'fire', position: [2, 0, 3], source: 'manual' }] };
+  ws.emit('eileen:annotations', fireMarks, observer);
+  assert.deepEqual(publisher.messages.at(-1).data, fireMarks);
+  const beforeInvalidFire = publisher.messages.length;
+  ws.emit('eileen:annotations', { ...fireMarks, items: [...fireMarks.items, fireMarks.items[1]] }, observer);
+  ws.emit('eileen:annotations', { ...marks, items: [{ type: 'fire', position: [Infinity, 0, 0] }] }, observer);
+  assert.equal(publisher.messages.length, beforeInvalidFire);
+  ws.emit('eileen:annotations', marks, observer);
+  assert.deepEqual(publisher.messages.at(-1).data, marks);
   const effects = { version: 1, roomId: '10_17_2026', running: true, elapsed: 12,
     floorY: 0, ceilingY: 3, center: [0, 0], size: 6, fires: [[1, 0, 1]] };
   ws.emit('eileen:effects', effects, other);

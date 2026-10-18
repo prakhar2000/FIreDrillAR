@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Effects Test</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #15171c; font-family: system-ui, sans-serif; }
+    #hud {
+      position: fixed; top: 12px; left: 12px; z-index: 10; color: #f5f5f4; font-size: 13px; line-height: 1.55;
+      background: rgba(0,0,0,0.55); padding: 10px 14px; border-radius: 10px; max-width: 340px; pointer-events: none;
+    }
+    #hud b { color: #fdba74; }
+    #log { margin-top: 6px; color: #fca5a5; min-height: 1em; }
+  </style>
+</head>
+<body>
+  <div id="hud">
+    <div><b>Effects test (P2)</b></div>
+    <div>Drag: look · WASD: walk · <b>C</b>: crouch</div>
+    <div>Tool <b>1</b> fire · <b>2</b> exit · <b>3</b> blocked, then click a surface</div>
+    <div><b>Space</b>: start drill (smoke, sound, spread) · <b>R</b>: reset · <b>H</b>: heat view · <b>F</b>: 4× time · <b>V</b>: flipbook / procedural · <b>B</b>: bloom</div>
+    <div id="stats"></div>
+    <div id="log"></div>
+  </div>
+  <script type="module" src="/src/effects-test.js"></script>
+</body>
+</html>

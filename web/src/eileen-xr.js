@@ -3,6 +3,12 @@ import { connectPoseChannel } from './eileen-pose-channel.js';
 import { loadHeadsetRoom, roomToXRMatrix } from './eileen-xr-room.js';
 import { createHeadsetAnnotations } from './eileen-xr-annotations.js';
 import { createRoomEffects } from './eileen-effects.js';
+import { createXRFire, setAudioListener } from './effects.js';
+import { createXRHud } from './hud.js';
+import { drill } from './drill.js';
+import { startAgent, stopAgent } from './voice.js';
+import { connect as connectHeat, send as sendHeat, heatFrom } from './heat.js';
+import { createFireLifecycle } from './eileen-fire-lifecycle.js';
 
 const startButton = document.querySelector('#start');
 const stopButton = document.querySelector('#stop');
@@ -21,6 +27,84 @@ const soundButton = document.querySelector('#effects-sound');
 const effectsStatus = document.querySelector('#effects-status');
 const roomStatus = document.querySelector('#model-status');
 
+// Drill: the observer's `fire` marker ignites; each frame feeds fire → drill → HUD, heat and the voice agent.
+let fire, hud, items = [], drillOn = false, lastEffects = null, hudObjects = [];
+const head = new THREE.Vector3(), headQuat = new THREE.Quaternion();
+const worldPoints = (type) => items.filter((item) => item.type === type)
+  .map((item) => roomRoot.localToWorld(new THREE.Vector3().fromArray(item.position)));
+const clearExits = () => worldPoints('exit').filter((exit) => !worldPoints('blocked')
+  .some((point) => Math.hypot(point.x - exit.x, point.z - exit.z) < 1.5));
+const annotationFloor = () => modelAlignment?.target[1] ?? lastEffects?.floorY ?? null;
+
+function resetHud() {
+  // The upstream HUD has no reset hook; replace only the camera children it owns.
+  for (const object of hudObjects) {
+    object.geometry?.dispose(); object.material?.map?.dispose(); object.material?.dispose();
+    object.removeFromParent();
+  }
+  const before = new Set(camera.children);
+  hud = createXRHud(camera);
+  hudObjects = camera.children.filter((object) => !before.has(object));
+}
+
+const fireLifecycle = createFireLifecycle({
+  ignite(position) {
+    if (lastEffects) effects.apply({ ...lastEffects, running: false, fires: [] });
+    fire.ignite(position); drill.start(); drillOn = true; resetHud();
+    effectsStatus.textContent = 'Drill fire active. Guidance requires fresh alignment.';
+  },
+  stop(reason) {
+    fire?.reset(); drill.stop(reason); drillOn = false;
+    sendHeat({ left: 0, right: 0, buzz: false, cool: true });
+    resetHud(); hud.update({ time: 0, oxygen: 1, smokeDepth: 0 });
+    effectsStatus.textContent = 'Drill stopped. Fire cleared.';
+  },
+});
+
+function onSnapshot(snapshot) {
+  if (snapshot?.roomId !== '10_17_2026') return;
+  items = snapshot.items;
+  fireLifecycle.apply(items);
+}
+
+function stepDrill(dt, smokeDepth) {
+  const state = drill.update(dt, { smokeDepth, head, exits: clearExits() });
+  hud.update(state);
+  const done = state.escaped || state.timedOut;
+  sendHeat(done ? { left: 0, right: 0, buzz: false, cool: true }
+    : { ...heatFrom(head, headQuat, fire.worldFires()), buzz: smokeDepth > 0.5, cool: false });
+  if (!done) return;
+  drillOn = false;
+  drill.stop(state.escaped ? 'escaped' : 'timeout');
+  hud.review(drill.stats());
+}
+
+// Test without the observer: firedrill.ignite([x, y, z]) in the console (scan coordinates).
+window.firedrill = {
+  ignite(position) {
+    if (!Array.isArray(position) || position.length !== 3 || !position.every(Number.isFinite)) return false;
+    const snapshot = { roomId: '10_17_2026', items: [...items.filter((item) => item.type !== 'fire'), { type: 'fire', position }] };
+    onSnapshot(snapshot); updateAnnotations(snapshot, annotationFloor(), modelAlignment?.scale || 1); return true;
+  },
+  clear() {
+    const snapshot = { roomId: '10_17_2026', items: items.filter((item) => item.type !== 'fire' && item.source !== 'geometry-draft') };
+    onSnapshot(snapshot); updateAnnotations(snapshot, annotationFloor(), modelAlignment?.scale || 1);
+  },
+  status: () => ({ running: drillOn, fire: fireLifecycle.key, stats: drill.stats(), aligned: !!modelAlignment }),
+};
+
+const agentContext = () => {
+  if (!hasPose || !modelAlignment) throw new Error('Headset tracking or alignment unavailable; coaching paused.');
+  return {
+  head: head.toArray(),
+  facing: new THREE.Vector3(0, 0, -1).applyQuaternion(headQuat).toArray(),
+  fires: fire.worldFires().map((v) => v.toArray()),
+  exits: clearExits().map((v) => v.toArray()),
+  blocked: worldPoints('blocked').map((v) => v.toArray()),
+  smoke: fire.smoke.depth || 0,
+  };
+};
+
 function resetTracking() {
   pendingAlignment = null;
   modelAlignment = null;
@@ -38,6 +122,7 @@ function applyRoomAlignment(data) {
   if (!roomReady) return;
   roomRoot.matrix.copy(roomToXRMatrix(data));
   modelAlignment = data;
+  updateAnnotations({ roomId: '10_17_2026', items }, annotationFloor(), data.scale);
   roomStatus.textContent = 'Room aligned with computer. Head movement is live.';
 }
 
@@ -64,6 +149,8 @@ function makeView() {
   camera = new THREE.PerspectiveCamera(60, 2, 0.05, 100);
   scene.add(camera);
   camera.position.set(0, 1.6, 2.5);
+  fire = createXRFire(roomRoot, camera);
+  resetHud();
   const canvas = document.createElement('canvas'); canvas.width = 1024; canvas.height = 256;
   const texture = new THREE.CanvasTexture(canvas);
   label = { canvas, texture, text: '' };
@@ -72,11 +159,15 @@ function makeView() {
   renderer.setAnimationLoop((time, frame) => {
     const dt = previousFrameTime === null ? 0 : Math.min(0.05, Math.max(0, (time - previousFrameTime) / 1000));
     previousFrameTime = time;
+    const smokeDepth = fire.update(dt, drillOn && !!modelAlignment && hasPose);
+    if (soundButton.getAttribute('aria-pressed') !== 'true') fire.fire.stopSound();
     if (frame && session && reference) {
       const pose = session.visibilityState === 'visible' ? frame.getViewerPose(reference) : null;
       if (pose && !pose.emulatedPosition) {
         latestHeadY = modelAlignment ? pose.transform.position.y * modelAlignment.scale + modelAlignment.target[1] : 1.6;
         if (!hasPose) { resetTracking(); hasPose = true; }
+        head.copy(pose.transform.position); headQuat.copy(pose.transform.orientation);
+        if (drillOn && modelAlignment) stepDrill(dt, smokeDepth);
         if (time - lastSend >= 50) {
           const p = pose.transform.position, q = pose.transform.orientation;
           if (channel?.sendPose({ sessionId, seq: seq++, position: [p.x, p.y, p.z], quaternion: [q.x, q.y, q.z, q.w] })) {
@@ -86,6 +177,7 @@ function makeView() {
         }
       } else {
         if (hasPose) channel?.tracking('lost');
+        if (hasPose) sendHeat({ left: 0, right: 0, buzz: false, cool: true });
         hasPose = false;
         tracking.textContent = session.visibilityState !== 'visible'
           ? `Tracking paused: session ${session.visibilityState}. Close system menus.`
@@ -108,11 +200,14 @@ function makeView() {
     }
     effects.update(dt, latestHeadY);
     effects.beforeView(camera, Boolean(session && modelAlignment));
+    updateAnnotations.update(time / 1000);
     renderer.render(scene, camera);
   });
 }
 
 function endSession() {
+  stopAgent();
+  fireLifecycle.stop('session-ended');
   pendingAlignment = null;
   modelAlignment = null;
   effects?.enableSound(camera, false);
@@ -137,12 +232,14 @@ startButton.addEventListener('click', async () => {
     makeView();
     channel = connectPoseChannel({ role: 'publisher', room: roomInput.value,
       onEffects(data) {
-        effects.apply(data.roomId === '10_17_2026' ? data : { ...data, running: false, fires: [] });
-        effectsStatus.textContent = data.roomId === '10_17_2026'
+        lastEffects = data;
+        effects.apply(data.roomId === '10_17_2026' && !fireLifecycle.key ? data : { ...data, running: false, fires: [] });
+        if (!fireLifecycle.key) effectsStatus.textContent = data.roomId === '10_17_2026'
           ? `${data.fires.length} fires | Smoke ${data.running ? 'running' : 'stopped'}`
           : 'Computer is showing the sample room. Select Scanned room to sync effects.';
+        updateAnnotations({ roomId: '10_17_2026', items }, annotationFloor(), modelAlignment?.scale || 1);
       },
-      onAnnotations: (snapshot) => updateAnnotations(snapshot),
+      onAnnotations: (snapshot) => { onSnapshot(snapshot); updateAnnotations(snapshot, annotationFloor(), modelAlignment?.scale || 1); },
       onAlignment: applyRoomAlignment,
       onStatus: (message) => { connection.textContent = message; } });
     camera.position.set(0, 0, 0);
@@ -150,6 +247,8 @@ startButton.addEventListener('click', async () => {
     reference = renderer.xr.getReferenceSpace();
     reference.addEventListener('reset', resetTracking);
     resetTracking(); sent = 0;
+    connectHeat();
+    startAgent(agentContext);
     stopButton.disabled = false;
     support.textContent = 'VR active. Exit using the Digital Crown or Stop VR.';
   } catch (error) {
@@ -163,6 +262,8 @@ stopButton.addEventListener('click', () => session?.end());
 soundButton.addEventListener('click', () => {
   const enabled = soundButton.getAttribute('aria-pressed') !== 'true';
   effects.enableSound(camera, enabled);
+  if (enabled) { setAudioListener(camera); if (fireLifecycle.key) fire.fire.startSound(); }
+  else fire.fire.stopSound();
   soundButton.setAttribute('aria-pressed', String(enabled));
   soundButton.textContent = enabled ? 'Mute sound' : 'Enable sound';
 });

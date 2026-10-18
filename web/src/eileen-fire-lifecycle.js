@@ -25,12 +25,13 @@ export function createFireLifecycle({ ignite, stop }) {
     apply(items) {
       const next = fireKey(items);
       if (next === key) return false;
-      if (key) stop('replaced');
+      if (key) stop(next ? 'replaced' : 'removed');
       key = next;
       if (next) ignite(items.find((item) => item.type === 'fire').position);
       return true;
     },
     stop(reason = 'removed') { if (key) stop(reason); key = ''; },
+    get key() { return key; },
   };
 }
 
