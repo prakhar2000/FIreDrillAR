@@ -69,26 +69,76 @@ function igniteAt(scanPos) {
   refresh();
   return true;
 }
-window.firedrill = { ignite: igniteAt };
+window.firedrill = { ignite: igniteAt, reset: () => resetDrill() };
 
-// World ray → first hit on the scan, in scan coordinates (null on a miss).
+// Reset: clears the wearer's fire, stops the drill and the wrists, clears the HUD. Marked exits stay.
+function resetDrill() {
+  ownItems = ownItems.filter((item) => item.type !== 'fire');
+  if (drillOn) drill.stop('reset');
+  refresh();
+  hud.reset();
+  sendHeat({ left: 0, right: 0, buzz: false, cool: false });
+}
+
+// World ray → first hit on the scan, in scan coordinates (null on a miss). A wall or ceiling hit
+// lands on the floor 0.3 m in front of it, so pointing at a corner starts the fire in that corner.
 const raycaster = new THREE.Raycaster();
+const toScan = new THREE.Matrix4();
 function scanHit(origin, direction) {
   if (!roomScan) return null;
   roomRoot.updateMatrixWorld(true);
   raycaster.set(origin, direction);
   const hit = raycaster.intersectObject(roomScan.model, true)[0];
-  return hit ? roomRoot.worldToLocal(hit.point).toArray() : null;
+  if (!hit) return null;
+  const at = roomRoot.worldToLocal(hit.point.clone());
+  const normal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld);
+  if (normal.dot(direction) > 0) normal.negate();   // DoubleSide scan: face the viewer
+  normal.transformDirection(toScan.copy(roomRoot.matrixWorld).invert());
+  if (normal.y < 0.6) {
+    const out = new THREE.Vector3(normal.x, 0, normal.z);
+    if (out.lengthSq() > 0.01) at.addScaledVector(out.normalize(), 0.3);
+    at.y = roomScan.floorY;
+  }
+  return at.toArray();
 }
 
-// Gaze + pinch on visionOS (transient-pointer), or a controller trigger in the emulator.
-function onSelect(event) {
+// Gaze + pinch on visionOS (transient-pointer), or a controller trigger in the emulator. visionOS aims
+// the ray where the wearer looked when the pinch started, then moves it with the hand, so aim at selectstart.
+const aimed = new Map();
+function rayOf(event) {
   const pose = reference && event.frame.getPose(event.inputSource.targetRaySpace, reference);
-  if (!pose) return;
+  if (!pose) return null;
   const { position: p, orientation: q } = pose.transform;
-  const at = scanHit(new THREE.Vector3(p.x, p.y, p.z),
-    new THREE.Vector3(0, 0, -1).applyQuaternion(new THREE.Quaternion(q.x, q.y, q.z, q.w)));
-  if (at) igniteAt(at);
+  return { origin: new THREE.Vector3(p.x, p.y, p.z),
+    direction: new THREE.Vector3(0, 0, -1).applyQuaternion(new THREE.Quaternion(q.x, q.y, q.z, q.w)) };
+}
+function aim(event) {
+  const ray = rayOf(event);
+  if (!ray) return null;
+  raycaster.set(ray.origin, ray.direction);
+  if (raycaster.intersectObject(resetButton).length) return 'reset';
+  return scanHit(ray.origin, ray.direction) || floorAlong(ray);
+}
+
+// A ray through a scan hole still lands somewhere: where it meets the floor, else 2 m ahead on it.
+function floorAlong({ origin, direction }) {
+  if (!roomScan) return null;
+  const o = roomRoot.worldToLocal(origin.clone());
+  const d = direction.clone().transformDirection(toScan.copy(roomRoot.matrixWorld).invert());
+  const t = d.y < -0.05 ? (roomScan.floorY - o.y) / d.y : -1;
+  if (t > 0 && t < 15) return o.addScaledVector(d, t).toArray();
+  d.y = 0;
+  if (d.lengthSq() < 1e-6) return null;
+  return o.addScaledVector(d.normalize(), 2).setY(roomScan.floorY).toArray();
+}
+function onSelectStart(event) { aimed.set(event.inputSource, aim(event)); }
+function onSelectEnd(event) { aimed.delete(event.inputSource); }   // never reuse an old pinch's aim
+function onSelect(event) {
+  const target = aimed.has(event.inputSource) ? aimed.get(event.inputSource) : aim(event);
+  aimed.delete(event.inputSource);
+  window.firedrill.lastAim = target;   // console: what the last pinch hit
+  if (target === 'reset') resetDrill();
+  else if (target) igniteAt(target);
 }
 
 // Where the wearer looks: the scan under the head's forward ray, else ~2 m ahead on the floor.
@@ -104,6 +154,7 @@ function gazePoint() {
 // Voice: "fire" / "start a fire" ignites where the wearer looks; "exit" before the fire marks an exit there.
 // Anything else (and any question once the drill runs) goes to the coach.
 function onVoiceCommand(command, transcript) {
+  if (command.type === 'reset') { resetDrill(); return true; }
   if (!roomScan || drillOn) return false;
   if (command.type === 'exit') {
     ownItems = [...ownItems, { type: 'exit', position: gazePoint(), source: 'wearer' }];
@@ -154,6 +205,23 @@ function applyRoomAlignment(data) {
   roomStatus.textContent = 'Room aligned with computer. Head movement is live.';
 }
 
+// Look at it and pinch: a small RESET panel beside the HUD, always in view.
+let resetButton;
+function makeResetButton() {
+  const canvas = document.createElement('canvas'); canvas.width = 256; canvas.height = 112;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = 'rgba(20, 34, 48, 0.85)'; ctx.fillRect(0, 0, 256, 112);
+  ctx.strokeStyle = '#ff9a5a'; ctx.lineWidth = 6; ctx.strokeRect(3, 3, 250, 106);
+  ctx.fillStyle = '#ffffff'; ctx.font = 'bold 52px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('RESET', 128, 58);
+  const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace;
+  const button = new THREE.Mesh(new THREE.PlaneGeometry(0.2, 0.0875),
+    new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthTest: false, depthWrite: false }));
+  button.position.set(0.56, -0.22, -1);   // right of the HUD panel (0.86 m wide at z -1)
+  button.renderOrder = 1001; button.frustumCulled = false;
+  return button;
+}
+
 function makeView() {
   if (renderer) return;
   renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -178,6 +246,7 @@ function makeView() {
   scene.add(camera); // so HUD children of the camera render
   fire = createXRFire(roomRoot, camera);
   hud = createXRHud(camera);
+  resetButton = makeResetButton(); camera.add(resetButton);
   const canvas = document.createElement('canvas'); canvas.width = 1024; canvas.height = 256;
   const texture = new THREE.CanvasTexture(canvas);
   label = { canvas, texture, text: '' };
@@ -243,7 +312,9 @@ startButton.addEventListener('click', async () => {
     // Request directly in the click handler to preserve Safari user activation.
     session = await navigator.xr.requestSession('immersive-vr', { requiredFeatures: ['local-floor'] });
     session.addEventListener('end', endSession, { once: true });
+    session.addEventListener('selectstart', onSelectStart);
     session.addEventListener('select', onSelect);
+    session.addEventListener('selectend', onSelectEnd);
     makeView();
     channel = connectPoseChannel({ role: 'publisher', room: roomInput.value,
       onAnnotations: onSnapshot,
@@ -266,6 +337,7 @@ startButton.addEventListener('click', async () => {
   }
 });
 stopButton.addEventListener('click', () => session?.end());
+document.querySelector('#reset').addEventListener('click', resetDrill);
 
 async function checkSupport() {
   if (!window.isSecureContext) { support.textContent = 'Open this page over trusted HTTPS.'; return; }

@@ -138,6 +138,12 @@ export function createXRHud(camera) {
       }, blink);
       draw(next);
     },
+    /** Back to a blank panel (drill reset); the next update() paints the live HUD again. */
+    reset() {
+      reviewing = false;
+      ctx.clearRect(0, 0, W, H);
+      draw('blank');
+    },
     review(stats = {}) {
       reviewing = true;
       const card = {
