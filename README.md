@@ -438,6 +438,7 @@ Paste-ready instructions for each person's agent: [`TASKS-visionpro.md`](TASKS-v
 **Vision Pro (today):**
 - ✅ **`POST /agent`** (`server/agent.py`, contract in section 7). Check: `python agent.py` in `server/`. `/health` shows `"anthropic_key"`; add `ANTHROPIC_API_KEY` to `server/.env` for Claude replies (rule-based until then).
 - ✅ **Buzz pulses** instead of a constant drone: 0.25 s on / 0.5 s off while `buzz` is true (`BUZZ_EVERY` in `dots.py`).
+- ✅ **Place fire** tool in the observer (desktop.js, Eileen's file): click the scan, the headset ignites there; clicking again moves it.
 - 🚧 Heat stream from the Vision Pro through Prakhar's Vite proxy, and the worn wrist run (heat / buzz / cool, `SWAP_SIDES` if needed).
 
 5. ⏸ **Phone-AR fire (`unity/`)**, paused for today's Vision Pro demo; port to visionOS after the hackathon. Devaj has it working and is the only one who builds and runs the Unity app; send Unity requests to him. Open it with Unity Hub → Add → `unity/` (Unity 6000.5.10f1). Then run **Fire > Build AR Scene**, which writes `Assets/Fire/Scenes/FireAR.unity`. Tapping a detected plane ignites a fire, which spreads over the planes with smoke and firelight. `Library/` is regenerated and gitignored.
