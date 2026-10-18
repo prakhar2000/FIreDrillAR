@@ -15,6 +15,7 @@ RESUME_SKIN_C, RESUME_SINK_C = 37.0, 42.0    # back to normal below both
 BUZZ_HZ = 170        # Dots vibrate 140-210 Hz
 SWAP_SIDES = False   # ponytail: calibration knob, flip if the "left" Dots ended up on the right wrist
 LOOP_S = 0.25
+BUZZ_EVERY = 3       # buzz pulses: 1 loop on, BUZZ_EVERY-1 off (0.25 s on / 0.5 s off), not a constant drone
 
 
 def plan(left, right, cool, n):
@@ -91,6 +92,7 @@ class Dots:
             with self.lock:
                 left, right, buzz, cool = self.state
             n += 1
+            pulse = buzz and n % BUZZ_EVERY == 0
             for i, (d, (target, rgb)) in enumerate(zip(self.dots, plan(left, right, cool, len(self.dots)))):
                 try:
                     if n % 4 == 0:                    # ~1 Hz safety check
@@ -111,12 +113,12 @@ class Dots:
                         else:
                             self._target(d, target)
                         sent[(i, "t")] = target
-                    if sent.get((i, "b")) != buzz:
-                        if buzz:
+                    if sent.get((i, "b")) != pulse:
+                        if pulse:
                             d.play_frequency(BUZZ_HZ, 1.0)
                         else:
                             d.stop_vibration()
-                        sent[(i, "b")] = buzz
+                        sent[(i, "b")] = pulse
                     if sent.get((i, "c")) != rgb:
                         d.set_led(*rgb)
                         sent[(i, "c")] = rgb
