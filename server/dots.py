@@ -2,7 +2,7 @@
 background thread talks Modbus to the Dots (serial is slow, so the server never waits).
 
 Hello-world + logic check:  python dots.py
-SDK notes and where the safety numbers come from: README section 4.
+SDK notes and where the safety numbers come from: HANDBOOK section 4.
 """
 import contextlib, io, threading, time
 

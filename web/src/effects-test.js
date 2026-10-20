@@ -47,7 +47,7 @@ const boxVerts = (w, h, d) => {
   return v;
 };
 
-// Fake room in the README room.json format (horizontal planes: polygon in the x/z plane)
+// Fake room in the HANDBOOK room.json format (horizontal planes: polygon in the x/z plane)
 const FAKE_ROOM = {
   version: 1,
   surfaces: [

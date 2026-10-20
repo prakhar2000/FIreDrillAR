@@ -2,13 +2,13 @@
 
 Committed and shared by the whole team, for any coding agent (Claude Code, Codex, Cursor, Copilot, …). Personal preferences go in your agent's local or global config (e.g. `CLAUDE.local.md`, gitignored), not here.
 
-`README.md` is the team handbook: idea, roles, file ownership, shared contracts, timeline. Read it before making changes.
+`HANDBOOK.md` is the team handbook (`README.md` is the public intro for visitors): idea, roles, file ownership, shared contracts, timeline. Read it before making changes.
 
 ## Keep the docs current
 
 With every commit or meaningful bit of progress, update the docs in the same commit:
 
-- **`README.md`** — if you changed a shared contract (section 7: `room.json`, scenario functions, effects API, drill API, voice commands, haptics message), a setup step, the folder layout, ports/URLs, or a troubleshooting fix you discovered.
+- **`HANDBOOK.md`** — if you changed a shared contract (section 7: `room.json`, scenario functions, effects API, drill API, voice commands, haptics message), a setup step, the folder layout, ports/URLs, or a troubleshooting fix you discovered.
 - **Progress** — tick off or note status in the build plan (section 8) for the owner's steps, e.g. `✅ done`, `🚧 in progress`, `⚠️ blocked: <why>`.
 - Any other `.md` in the repo that the change makes stale.
 
@@ -31,7 +31,7 @@ When you give a shell command, give both forms if they differ (bash/zsh on Mac, 
 ### Will break the demo if missed
 1. **Devaj's server is unreachable.** Prakhar's Vite proxies `/py` to Devaj's laptop on port 8000. Windows marks a phone hotspot as *Public*, and its firewall then blocks inbound traffic. Fix: Settings → Network → hotspot → **Private**, and allow Python on Private networks. Test: `https://<prakhar-ip>:5173/py/health`.
 2. **The AR clip is stuck on the Quest.** macOS can't browse the headset as a drive. Prakhar needs **Meta Quest Developer Hub** or `adb` (`brew install android-platform-tools`) installed *before* the Quest slot. Alternative: share it from the headset itself.
-3. **DataFeel.** We use DataFeel's Python SDK (`server/dots.py`, details in README section 4). It finds the El Jefe's serial port by USB ID, so never hard-code `COM3` or `/dev/tty.…`. Keep the driver and the server on Devaj's Windows laptop. If no COM port appears, install the Silicon Labs **CP210x VCP** driver. Only one process can hold the port, so close Composer or any sample app before starting the server; `uvicorn --reload` restarts release it automatically.
+3. **DataFeel.** We use DataFeel's Python SDK (`server/dots.py`, details in HANDBOOK section 4). It finds the El Jefe's serial port by USB ID, so never hard-code `COM3` or `/dev/tty.…`. Keep the driver and the server on Devaj's Windows laptop. If no COM port appears, install the Silicon Labs **CP210x VCP** driver. Only one process can hold the port, so close Composer or any sample app before starting the server; `uvicorn --reload` restarts release it automatically.
 4. **Line endings.** `.gitattributes` forces LF. Don't remove it, and don't commit with a tool that rewrites it to CRLF.
 
 ### Git / files

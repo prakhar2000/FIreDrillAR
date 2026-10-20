@@ -2,11 +2,11 @@
 
 Each block below is a complete instruction for that person's coding agent. Copy the whole block into a fresh session in your clone of the repo.
 
-**Shared ground rules (already in each block):** pull first, edit only your files, keep `README.md` section 8 status current in the same commit, push to your own branch, and tell Prakhar when it's ready to merge. The team's 5:30 PM feature freeze still applies unless the team agrees to move it.
+**Shared ground rules (already in each block):** pull first, edit only your files, keep `HANDBOOK.md` section 8 status current in the same commit, push to your own branch, and tell Prakhar when it's ready to merge. The team's 5:30 PM feature freeze still applies unless the team agrees to move it.
 
 **Unity:** Devaj has the Unity project (`unity/`) working, so he is the one who builds and runs it. Don't open, build or commit `unity/` yourself; send Unity changes or requests to Devaj. (A Vision Pro Unity build after the hackathon needs a Mac with Xcode; Devaj drives it from there.)
 
-**How the pieces fit:** `web/src/eileen-xr.js` already calls every hook below, and each hook has a working stub. You can each fill in your own piece and test it without waiting for anyone else. The contract is in README section 7, "Vision Pro drill hooks". Test without a headset: run the Eileen dev server (below), open `https://localhost:5173/eileen-xr.html` in Chrome with the **Immersive Web Emulator** extension, Start VR, then type `firedrill.ignite([0, 0, 0])` in the console (scan coordinates).
+**How the pieces fit:** `web/src/eileen-xr.js` already calls every hook below, and each hook has a working stub. You can each fill in your own piece and test it without waiting for anyone else. The contract is in HANDBOOK section 7, "Vision Pro drill hooks". Test without a headset: run the Eileen dev server (below), open `https://localhost:5173/eileen-xr.html` in Chrome with the **Immersive Web Emulator** extension, Start VR, then type `firedrill.ignite([0, 0, 0])` in the console (scan coordinates).
 
 Dev server (Prakhar hosts; anyone can run it locally):
 - Mac: `cd web && PY_SERVER=http://<devaj-ip>:8000 npm run dev -- --config vite.eileen.config.js`
@@ -19,7 +19,7 @@ Observer (computer): `https://<host-ip>:5173/` · Headset (Vision Pro Safari): `
 ## Prakhar: oxygen, timer, HUD, review (and host + merge)
 
 ```text
-Project: FireDrill AR (repo root). Read AGENTS.md and README.md sections 7 and 8 ("Vision Pro drill hooks", "Today's demo: Vision Pro") first. Today's demo is the Vision Pro WebXR page web/eileen-xr.html (immersive-vr in Safari, the textured room scan, not passthrough). Work on branch `prakhar`; first run `git pull origin main`.
+Project: FireDrill AR (repo root). Read AGENTS.md and HANDBOOK.md sections 7 and 8 ("Vision Pro drill hooks", "Today's demo: Vision Pro") first. Today's demo is the Vision Pro WebXR page web/eileen-xr.html (immersive-vr in Safari, the textured room scan, not passthrough). Work on branch `prakhar`; first run `git pull origin main`.
 
 Your files: web/src/drill.js (Eileen's file; she agreed you take it today, so say so in the commit message) and web/src/hud.js. Don't edit other files; eileen-xr.js already calls your code.
 
@@ -36,8 +36,8 @@ Your files: web/src/drill.js (Eileen's file; she agreed you take it today, so sa
    - review(stats): replace it with a large review card: Escaped / Out of air, escape time, oxygen left, time in smoke, % time low.
    - It must look polished: rounded panel, generous padding, high contrast, readable in VR. Redraw the canvas only when the text changes.
 3. Test: Chrome + Immersive Web Emulator on eileen-xr.html, then firedrill.ignite([0,0,0]) in the console. Move the emulated headset into the smoke and out to an EXIT marker.
-4. Host for the demo: run the Eileen dev server with PY_SERVER pointing at Devaj's laptop (README "Today's demo" + TASKS-visionpro.md), and check https://<your-ip>:5173/py/health.
-5. Update README section 8 (your row in the Vision Pro table: ✅/🚧), commit, push `prakhar`. Then merge everyone's branches into main as they come in: `node --test eileen/pose.test.mjs`, `node src/heat.check.js` and `npx vite build --config vite.eileen.config.js` must pass in web/.
+4. Host for the demo: run the Eileen dev server with PY_SERVER pointing at Devaj's laptop (HANDBOOK "Today's demo" + TASKS-visionpro.md), and check https://<your-ip>:5173/py/health.
+5. Update HANDBOOK section 8 (your row in the Vision Pro table: ✅/🚧), commit, push `prakhar`. Then merge everyone's branches into main as they come in: `node --test eileen/pose.test.mjs`, `node src/heat.check.js` and `npx vite build --config vite.eileen.config.js` must pass in web/.
 ```
 
 ---
@@ -45,7 +45,7 @@ Your files: web/src/drill.js (Eileen's file; she agreed you take it today, so sa
 ## Varnika: fire and smoke in the Vision Pro
 
 ```text
-Project: FireDrill AR (repo root). Read AGENTS.md and README.md sections 7 and 8 ("Vision Pro drill hooks", "Today's demo: Vision Pro") first. Today's demo is the Vision Pro WebXR page web/eileen-xr.html (immersive-vr in Safari: an opaque textured room scan, not passthrough). Work on branch `varnika`; first run `git pull origin main`.
+Project: FireDrill AR (repo root). Read AGENTS.md and HANDBOOK.md sections 7 and 8 ("Vision Pro drill hooks", "Today's demo: Vision Pro") first. Today's demo is the Vision Pro WebXR page web/eileen-xr.html (immersive-vr in Safari: an opaque textured room scan, not passthrough). Work on branch `varnika`; first run `git pull origin main`.
 
 Your file: web/src/effects.js only. At the bottom there is a stub `createXRFire(roomRoot, camera)` that eileen-xr.js already calls. Fill it in using your own FireSystem / Smoke:
 - roomRoot is the THREE.Group holding the scan (web/src/eileen-xr-room.js loads it). Its matrix maps scan coordinates → XR world.
@@ -61,7 +61,7 @@ Look and performance:
 
 Test: run the Eileen dev server (TASKS-visionpro.md), open https://localhost:5173/eileen-xr.html in Chrome with the Immersive Web Emulator, Start VR, then run firedrill.ignite([x, y, z]) in the console (pick a floor corner of the scan). Then try it on the Vision Pro.
 
-Update README section 8 (your row in the Vision Pro table + your effects line), commit, push `varnika`, and tell Prakhar.
+Update HANDBOOK section 8 (your row in the Vision Pro table + your effects line), commit, push `varnika`, and tell Prakhar.
 ```
 
 ---
@@ -69,7 +69,7 @@ Update README section 8 (your row in the Vision Pro table + your effects line), 
 ## Eileen: fire tool, route guide and exit signs
 
 ```text
-Project: FireDrill AR (repo root). Read AGENTS.md, README.md sections 7 and 8 ("Vision Pro drill hooks", "Today's demo: Vision Pro") and web/eileen/README.md first. Today's demo is your Vision Pro page web/eileen-xr.html. Work on branch `eileen`; first run `git pull origin main`.
+Project: FireDrill AR (repo root). Read AGENTS.md, HANDBOOK.md sections 7 and 8 ("Vision Pro drill hooks", "Today's demo: Vision Pro") and web/eileen/README.md first. Today's demo is your Vision Pro page web/eileen-xr.html. Work on branch `eileen`; first run `git pull origin main`.
 
 Already done for you (by Devaj; review it):
 - eileen-xr.js now wires the drill: an annotation item { type: 'fire', position } ignites the fire, and each frame feeds fire → drill → HUD, DataFeel heat and the voice agent.
@@ -86,7 +86,7 @@ Your files: web/src/desktop.js, web/src/eileen-*.js, web/eileen/*.
    - BLOCKED is red with an X.
    Before ignition, keep them subtle.
 4. Polish the observer page UI (desktop.js panel) so it reads well on the big screen: clear status, big buttons, consistent colours.
-5. Run `node --test eileen/pose.test.mjs` and `npx vite build --config vite.eileen.config.js` in web/. Update web/eileen/README.md and your README section 8 row, commit, push `eileen`, and tell Prakhar.
+5. Run `node --test eileen/pose.test.mjs` and `npx vite build --config vite.eileen.config.js` in web/. Update web/eileen/README.md and your HANDBOOK section 8 row, commit, push `eileen`, and tell Prakhar.
 ```
 
 ---
@@ -94,7 +94,7 @@ Your files: web/src/desktop.js, web/src/eileen-*.js, web/eileen/*.
 ## Emma: hands-free voice agent (+ pitch)
 
 ```text
-Project: FireDrill AR (repo root). Read AGENTS.md and README.md sections 7 and 8 ("Vision Pro drill hooks", "Today's demo: Vision Pro") first. Today's demo is the Vision Pro WebXR page web/eileen-xr.html (Safari on visionOS). Work on branch `emma`; first run `git pull origin main`.
+Project: FireDrill AR (repo root). Read AGENTS.md and HANDBOOK.md sections 7 and 8 ("Vision Pro drill hooks", "Today's demo: Vision Pro") first. Today's demo is the Vision Pro WebXR page web/eileen-xr.html (Safari on visionOS). Work on branch `emma`; first run `git pull origin main`.
 
 Your file: web/src/voice.js. At the bottom there is a stub `startAgent(getContext)` that eileen-xr.js calls right after VR starts. Fill it in:
 - Hands-free: no button. Open the mic and keep listening, reusing your AssemblyAI streaming code (token from /py/token, 16 kHz PCM). Share the code with the existing start() panel; don't copy it.
@@ -107,9 +107,9 @@ Vision Pro Safari risks; test these first, on the device:
 (a) Does getUserMedia prompt while in an immersive session? If not, the mic must be opened before Start VR: ask Eileen for a "Enable voice" step before VR.
 (b) new AudioContext({ sampleRate: 16000 }): if Safari refuses it, resample from the native rate.
 (c) speechSynthesis must work during the immersive session.
-Report what you find in the README troubleshooting section.
+Report what you find in the HANDBOOK troubleshooting section.
 
-Then: README section 8 row, commit, push `emma`, tell Prakhar. After that: pitch/ script for the Vision Pro flow (place the fire → exit guide → voice coach → wrists heat → oxygen and review), plus credits.
+Then: HANDBOOK section 8 row, commit, push `emma`, tell Prakhar. After that: pitch/ script for the Vision Pro flow (place the fire → exit guide → voice coach → wrists heat → oxygen and review), plus credits.
 ```
 
 ---
@@ -117,7 +117,7 @@ Then: README section 8 row, commit, push `emma`, tell Prakhar. After that: pitch
 ## Devaj: /agent endpoint, heat from the headset, wrists
 
 ```text
-Project: FireDrill AR (repo root). Read AGENTS.md and README.md sections 7 and 8 ("Vision Pro drill hooks", "Today's demo: Vision Pro") first. Never read server/.env. Today's demo is the Vision Pro WebXR page web/eileen-xr.html. Work on branch `devaj`; first run `git pull origin main`.
+Project: FireDrill AR (repo root). Read AGENTS.md and HANDBOOK.md sections 7 and 8 ("Vision Pro drill hooks", "Today's demo: Vision Pro") first. Never read server/.env. Today's demo is the Vision Pro WebXR page web/eileen-xr.html. Work on branch `devaj`; first run `git pull origin main`.
 
 Your files: server/, web/src/heat.js and unity/. You have Unity working, so you are the only one who builds and runs the Unity app; the rest of the team sends Unity requests to you.
 
@@ -132,6 +132,6 @@ Your files: server/, web/src/heat.js and unity/. You have Unity working, so you 
 2. Heat: eileen-xr.js already sends heatFrom(head, quat, fire.worldFires()) to /py/ws/heat, with buzz = smokeDepth > 0.5 (sent every 250 ms while in smoke) and cool on escape. Check that dots.py turns a continuous buzz into short pulses, not a constant drone; adjust in dots.py if needed. Verify the stream end to end from the Vision Pro through Prakhar's Vite proxy.
 3. Wear the Dots (left = Dots 1–2) and do the heat/buzz/cool run on the wrists. Set SWAP_SIDES if needed.
 4. Windows: hotspot profile = Private; allow Python through the firewall (AGENTS.md).
-5. README section 7 (/agent contract is listed; keep it in sync) and the section 8 row; commit and push `devaj`; tell Prakhar.
+5. HANDBOOK section 7 (/agent contract is listed; keep it in sync) and the section 8 row; commit and push `devaj`; tell Prakhar.
 Stretch (after 1–3 only): find EXIT signs automatically in the scan textures (10_17_2026/textures/*.jpg) with Claude vision and map them to 3D via the OBJ UVs.
 ```

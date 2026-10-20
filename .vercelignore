@@ -1,0 +1,7 @@
+# Vercel only needs the web app and the room scan it bundles (see vercel.json)
+/*
+!/web
+!/10_17_2026
+!/vercel.json
+/web/node_modules
+/web/dist

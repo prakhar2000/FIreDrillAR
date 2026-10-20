@@ -9,3 +9,4 @@ CLAUDE.local.md
 .DS_Store
 Thumbs.db
 server/exit_signs_cache.json
+.vercel

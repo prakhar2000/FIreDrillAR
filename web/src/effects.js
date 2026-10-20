@@ -8,7 +8,7 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 /* =====================================================================
    FireDrill AR — effects.js   (owner: Varnika)
 
-   README section 7 contract (unchanged, still works):
+   HANDBOOK section 7 contract (unchanged, still works):
      new Fire(position)       → .group (add to scene), .update(dt, growing), .intensity,
                                 .startSound(), .stopSound()
      new Smoke(scene, camera) → .start(ceilingY), .update(dt, headY, fires) returns depth 0–1, .stop()
@@ -2101,7 +2101,7 @@ function findScanMesh(scene) {
 }
 
 /**
- * README contract: one fire you place. It lights the shared FireSystem, which handles the
+ * HANDBOOK contract: one fire you place. It lights the shared FireSystem, which handles the
  * spreading; .intensity is how big the fire is around this spot (0–1).
  */
 export class Fire {
@@ -2468,7 +2468,7 @@ export class ExitSign {
 }
 
 // ---------------------------------------------------------------------
-// Vision Pro drill hook, called by eileen-xr.js (README section 7, "Vision Pro drill hooks").
+// Vision Pro drill hook, called by eileen-xr.js (HANDBOOK section 7, "Vision Pro drill hooks").
 // roomRoot = the scan group: its matrix maps scan coordinates → XR world. The fire and smoke are
 // parented to it, so they stay on the scan wherever it's aligned; positions given to and kept by
 // the sim are scan coordinates, and worldFires() converts to XR world.
